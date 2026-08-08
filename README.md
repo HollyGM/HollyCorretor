@@ -1,11 +1,16 @@
 # HollyCorretor
 
+[![Validação](https://github.com/HollyGM/HollyCorretor/actions/workflows/ci.yml/badge.svg)](https://github.com/HollyGM/HollyCorretor/actions/workflows/ci.yml)
+[![Licença: Apache 2.0](https://img.shields.io/badge/licen%C3%A7a-Apache%202.0-blue.svg)](LICENSE)
+[![macOS 26+](https://img.shields.io/badge/macOS-26%2B-black.svg)](#compatibilidade)
+[![Swift 6](https://img.shields.io/badge/Swift-6.0-orange.svg)](Package.swift)
+
 Aplicativo de barra de menus para macOS que corrige, reescreve, formaliza,
 simplifica ou resume o texto selecionado. O processamento usa o modelo local da
 Apple Intelligence por meio do framework Foundation Models; o texto não é enviado
 a uma API de terceiros.
 
-Versão atual: **0.2.0**
+Versão atual: **0.2.0** — consulte o [histórico de versões](CHANGELOG.md).
 
 ## Compatibilidade
 
@@ -75,6 +80,16 @@ O HollyCorretor nunca envia a mensagem automaticamente.
   sido alterada novamente; assim, uma cópia feita durante o processamento não é
   sobrescrita.
 
+Para relatar uma vulnerabilidade sem expor detalhes publicamente, consulte a
+[política de segurança](SECURITY.md).
+
+## Limitações de uso
+
+Resultados produzidos por modelos generativos podem conter erros, omissões ou
+alterações indesejadas. Todo resultado deve ser revisado antes de ser substituído,
+copiado ou utilizado. A ação de formalização auxilia a redação, mas não constitui
+parecer jurídico nem valida fatos, fundamentos ou conclusões.
+
 ## Desenvolvimento
 
 ```bash
@@ -91,6 +106,13 @@ Estrutura principal:
 - `scripts`: compilação, empacotamento e execução local.
 
 O fluxo do GitHub Actions executa testes e uma compilação de produção em macOS 26.
+As orientações para propostas de alteração estão em [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Dependência de terceiros
+
+O projeto utiliza `KeyboardShortcuts` 1.15.0, de Sindre Sorhus, distribuído sob a
+Licença MIT. As atribuições e o texto aplicável estão em
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Distribuição
 
@@ -98,3 +120,9 @@ O pacote gerado localmente recebe apenas uma assinatura ad hoc. Para distribuir 
 binário pronto a outras pessoas sem alertas do Gatekeeper, ainda será necessário
 usar uma conta Apple Developer, assinatura Developer ID e notarização. O código
 fonte pode ser compilado localmente sem essas credenciais.
+
+## Licença
+
+O código original do HollyCorretor é disponibilizado sob a
+[Apache License 2.0](LICENSE). Componentes de terceiros permanecem sujeitos às
+respectivas licenças; consulte [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
