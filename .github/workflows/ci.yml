@@ -13,7 +13,7 @@ jobs:
     runs-on: macos-26
     steps:
       - name: Obter código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Exibir versão do Swift
         run: swift --version
