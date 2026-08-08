@@ -1,0 +1,25 @@
+name: Validação
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: macos-26
+    steps:
+      - name: Obter código
+        uses: actions/checkout@v4
+
+      - name: Exibir versão do Swift
+        run: swift --version
+
+      - name: Executar testes
+        run: ./scripts/test.sh
+
+      - name: Gerar aplicativo
+        run: ./scripts/build.sh
