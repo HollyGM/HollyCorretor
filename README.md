@@ -10,6 +10,16 @@ simplifica ou resume o texto selecionado. O processamento usa o modelo local da
 Apple Intelligence por meio do framework Foundation Models; o texto não é enviado
 a uma API de terceiros.
 
+<p align="center">
+  <img src="docs/images/preview-formalizar.png" width="820"
+       alt="Menu da barra de status do HollyCorretor aberto ao lado do painel de prévia da ação Formalizar (juridiquês), mostrando o texto original e a versão em linguagem jurídica formal com os botões Cancelar, Copiar e Substituir.">
+</p>
+
+<p align="center">
+  <em>Painel de prévia da ação <strong>Formalizar (juridiquês)</strong> com o menu da barra de status aberto.
+  Todo resultado é revisado antes de substituir o texto original.</em>
+</p>
+
 Versão atual: **0.2.0** — consulte o [histórico de versões](CHANGELOG.md).
 
 ## Compatibilidade
@@ -40,6 +50,21 @@ ser alterados em **Preferências**.
 | Resumir | `Z` | Gera um resumo executivo com decisões, prazos e próximos passos. |
 | Ação personalizada | `P` | Aplica a instrução definida em Preferências. |
 | Salvar como Markdown | `M` | Abre uma janela para salvar a seleção em um arquivo `.md`. |
+
+## Interface
+
+O HollyCorretor vive na barra de menus, sem ícone no Dock. Ao acionar uma ação —
+por atalho, pelo ícone da barra de menus ou pelo menu **Serviços** — o resultado
+aparece em um painel de prévia editável sobre o aplicativo em uso; nada é
+substituído sem confirmação.
+
+Os atalhos, a instrução da **Ação personalizada** e o histórico local são
+ajustados em **Preferências**:
+
+<p align="center">
+  <img src="docs/images/preferencias.png" width="560"
+       alt="Janela de Preferências do HollyCorretor com as opções de iniciar com o Mac e salvar o histórico local, os campos de atalho de cada ação e o campo de instrução personalizada.">
+</p>
 
 ## Como compilar e usar
 
