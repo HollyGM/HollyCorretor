@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="360"><stop stop-color="#08101A"/><stop offset="1" stop-color="#1E1A13"/></linearGradient>
+    <linearGradient id="accent" x1="150" y1="70" x2="1180" y2="320"><stop stop-color="#FF9A5C"/><stop offset="1" stop-color="#F3C766"/></linearGradient>
+  </defs>
+  <rect width="1280" height="360" rx="28" fill="url(#bg)"/>
+  <g opacity="0.22" stroke="#B5A589" stroke-width="2"><path d="M45 84H178L212 117H332"/><path d="M72 289H216L248 253H380"/><path d="M1022 74H1130L1166 110H1235"/><path d="M944 293H1066L1100 259H1231"/></g>
+  <circle cx="184" cy="180" r="84" fill="#0B121D" stroke="url(#accent)" stroke-width="6"/>
+  <rect x="128" y="128" width="112" height="104" rx="18" fill="#121B27" stroke="url(#accent)" stroke-width="4"/>
+  <path d="M152 161H216M152 187H198M152 212H206" stroke="url(#accent)" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="184" cy="180" r="109" stroke="url(#accent)" stroke-width="2" stroke-dasharray="7 11" opacity="0.55"/>
+  <text x="305" y="106" fill="#FFC779" font-family="Arial, sans-serif" font-size="18" font-weight="700" letter-spacing="2.8">HOLLY SUITE · WRITING ON DEVICE</text>
+  <text x="305" y="172" fill="#FFF7EE" font-family="Arial, sans-serif" font-size="60" font-weight="700">HollyCorretor</text>
+  <text x="305" y="214" fill="#F0E2CD" font-family="Arial, sans-serif" font-size="26">Correção, reescrita, formalização e resumo no macOS</text>
+  <text x="305" y="255" fill="#CBB89B" font-family="Arial, sans-serif" font-size="20">Swift 6 · Foundation Models · Apple Intelligence · Revisão antes da substituição</text>
+</svg>
