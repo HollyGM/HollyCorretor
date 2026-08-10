@@ -1,9 +1,22 @@
-# HollyCorretor
+<p align="center">
+  <img src="docs/branding/holly-banner.svg" alt="HollyCorretor — correção, reescrita e resumo no macOS" width="100%">
+</p>
 
-[![Validação](https://github.com/HollyGM/HollyCorretor/actions/workflows/ci.yml/badge.svg)](https://github.com/HollyGM/HollyCorretor/actions/workflows/ci.yml)
-[![Licença: Apache 2.0](https://img.shields.io/badge/licen%C3%A7a-Apache%202.0-blue.svg)](LICENSE)
-[![macOS 26+](https://img.shields.io/badge/macOS-26%2B-black.svg)](#compatibilidade)
-[![Swift 6](https://img.shields.io/badge/Swift-6.0-orange.svg)](Package.swift)
+<p align="center">
+  <strong>Correção, reescrita, formalização e resumo no macOS.</strong><br>
+  Apple Intelligence · Privacidade por padrão · Revisão antes da substituição
+</p>
+
+<p align="center">
+  <a href="https://github.com/HollyGM/HollyCorretor/actions/workflows/ci.yml"><img alt="Validação" src="https://github.com/HollyGM/HollyCorretor/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="Licença Apache 2.0" src="https://img.shields.io/badge/licença-Apache%202.0-blue.svg"></a>
+  <img alt="macOS 26+" src="https://img.shields.io/badge/macOS-26%2B-black.svg">
+  <img alt="Swift 6" src="https://img.shields.io/badge/Swift-6.0-orange.svg">
+</p>
+
+> **Parte da suíte Holly**  
+> Ferramentas local-first para texto, documentos e mídia, com privacidade por padrão e segurança verificável.  
+> [HollyOCR](https://github.com/HollyGM/HollyOCR) · [HollyTranscrição](https://github.com/HollyGM/HollyTranscricao) · [HollyOptimizer](https://github.com/HollyGM/HollyOptimizer)
 
 Aplicativo de barra de menus para macOS que corrige, reescreve, formaliza,
 simplifica ou resume o texto selecionado. O processamento usa o modelo local da
