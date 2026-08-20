@@ -4,6 +4,11 @@ import HollyCore
 /// Janela flutuante que não rouba o foco do aplicativo onde a pessoa está
 /// escrevendo. Sem isto, só de aparecer o botão já desfaria a seleção.
 class FloatingPanel: NSPanel {
+    /// Chamado quando a janela deixa de ser a ativa — clique em outro lugar,
+    /// troca de aplicativo, ⌘Tab. Um painel que só some depois de escolher uma
+    /// ação obriga a pessoa a usar o que ela já decidiu não usar.
+    var onResignKey: (() -> Void)?
+
     init(size: NSSize, acceptsKeyboard: Bool) {
         self.acceptsKeyboard = acceptsKeyboard
         super.init(
@@ -25,6 +30,16 @@ class FloatingPanel: NSPanel {
     private let acceptsKeyboard: Bool
     override var canBecomeKey: Bool { acceptsKeyboard }
     override var canBecomeMain: Bool { false }
+
+    override func resignKey() {
+        super.resignKey()
+        onResignKey?()
+    }
+
+    /// Esc fecha, venha de onde vier na cadeia de resposta.
+    override func cancelOperation(_ sender: Any?) {
+        onResignKey?()
+    }
 
     /// Posiciona a janela junto de um retângulo da tela, virando para cima ou
     /// para baixo conforme o espaço disponível.

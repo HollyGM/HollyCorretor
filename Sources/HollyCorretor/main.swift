@@ -855,6 +855,9 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         watcher.onHide = { [weak self] in
             self?.lastHit = nil
             pill.hide()
+            // Clicar fora é a forma mais natural de dizer "não quero"; sem isto
+            // o painel ficava aberto até uma ação ser escolhida.
+            self?.closeActionPanel()
         }
         watcher.shouldIgnoreClick = { [weak self] point in
             guard let self else { return false }
@@ -925,6 +928,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             return
         }
         logger.info("Pastilha acionada com \(hit.text.count, privacy: .public) caracteres.")
+        selectionWatcher?.suspendSelectionVigil()
 
         // Precisa ser lido antes de o painel aparecer e tomar o foco.
         let targetApp = NSWorkspace.shared.frontmostApplication
@@ -968,6 +972,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         )
 
         let panel = FloatingPanel(size: NSSize(width: 268, height: 380), acceptsKeyboard: true)
+        panel.onResignKey = { [weak self] in self?.closeActionPanel() }
         panel.contentViewController = controller
         panel.setContentSize(controller.view.fittingSize)
         panel.position(near: anchor)
@@ -978,8 +983,10 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     }
 
     private func closeActionPanel() {
-        actionPanelWindow?.orderOut(nil)
+        guard let panel = actionPanelWindow else { return }
         actionPanelWindow = nil
+        panel.onResignKey = nil
+        panel.orderOut(nil)
     }
 
     private func checkAccessibilityPermission(prompt: Bool) -> Bool {

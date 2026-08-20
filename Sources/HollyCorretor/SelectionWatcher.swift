@@ -33,6 +33,7 @@ final class SelectionWatcher {
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var pending: Task<Void, Never>?
+    private var vigil: Task<Void, Never>?
     private let logger = Logger(
         subsystem: "com.hollycorretor.app",
         category: "SelectionWatcher"
@@ -102,6 +103,8 @@ final class SelectionWatcher {
     func stop() {
         pending?.cancel()
         pending = nil
+        vigil?.cancel()
+        vigil = nil
         if let tap {
             CGEvent.tapEnable(tap: tap, enable: false)
             CFMachPortInvalidate(tap)
@@ -113,6 +116,15 @@ final class SelectionWatcher {
         source = nil
         onHide?()
         logger.info("Vigia de seleção desligado.")
+    }
+
+    /// Encerra a conferência periódica da seleção. Deve ser chamado quando o
+    /// painel de ações assume: dali em diante o texto já foi capturado, e o
+    /// próprio painel toma o foco — a seleção original deixa de existir, o que
+    /// faria a conferência fechar o painel recém-aberto.
+    func suspendSelectionVigil() {
+        vigil?.cancel()
+        vigil = nil
     }
 
     /// O sistema desliga o tap se ele demorar demais para responder. Religar é
@@ -129,14 +141,17 @@ final class SelectionWatcher {
         switch type {
         case .leftMouseUp:
             guard !isOnOwnInterface(location) else { return }
+            vigil?.cancel()
             scheduleCheck()
         case .leftMouseDown, .rightMouseDown:
             // O clique na própria pastilha não pode ser lido como "clicou fora".
             guard !isOnOwnInterface(location) else { return }
             pending?.cancel()
+            vigil?.cancel()
             onHide?()
         case .scrollWheel:
             pending?.cancel()
+            vigil?.cancel()
             onHide?()
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
             reenableIfNeeded()
@@ -173,6 +188,25 @@ final class SelectionWatcher {
 
         let anchor = selectionRect(of: element) ?? cursorAnchor()
         onShow?(Hit(text: text, element: element, anchor: anchor))
+        watchUntilSelectionEnds(element: element, text: text)
+    }
+
+    /// Enquanto a pastilha está à mostra, confere de vez em quando se a seleção
+    /// ainda existe. Sem isto ela ficaria na tela depois de a pessoa começar a
+    /// digitar — e escutar o teclado exigiria a permissão de Monitoramento de
+    /// Entrada, que este recurso não precisa para nada mais.
+    private func watchUntilSelectionEnds(element: AXUIElement, text: String) {
+        vigil?.cancel()
+        vigil = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                guard !Task.isCancelled, let self else { return }
+                guard self.selectedText(of: element) == text else {
+                    self.onHide?()
+                    return
+                }
+            }
+        }
     }
 
     /// Evita o botão pular na tela a cada clique que selecione uma palavra solta
