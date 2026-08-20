@@ -46,18 +46,17 @@ final class TextProcessor: Sendable {
     /// uma margem de erro da estimativa.
     private static let contextReserve = 256
 
-    /// Teto medido, e não deduzido da janela de contexto. Numa tarefa de
-    /// transformação o modelo local não produz mais que ~2.400 caracteres por
-    /// resposta: acima disso ele condensa o texto em vez de transformá-lo por
-    /// inteiro. Medido em pt-BR neste modelo — entradas de 2.506 caracteres
-    /// voltam completas (razão 1,00) e de 3.067 já voltam com 78%.
-    /// A janela de 8.192 tokens comporta muito mais, mas a fidelidade da saída
-    /// é o limite que vale, não o contexto.
-    private static let transformationMaxCharacters = 2_400
+    /// Teto medido, e não deduzido da janela de contexto: numa única resposta o
+    /// modelo local não escreve mais que ~2.400 caracteres. Acima disso ele
+    /// condensa o texto em vez de transformá-lo por inteiro. Medido em pt-BR —
+    /// entradas de 2.506 caracteres voltam completas (razão 1,00) e de 3.067 já
+    /// voltam com 78%, com a saída travando em torno de 2.382 caracteres.
+    /// A janela de 8.192 tokens comporta muito mais, mas quem manda é a saída.
+    private static let outputCeilingCharacters = 2_400
 
-    /// O resumo não precisa devolver o texto inteiro, então pode receber
-    /// blocos bem maiores; aqui o limite volta a ser a janela de contexto.
-    private static let summaryMaxCharacters = 8_000
+    /// Nenhum bloco passa disto, por mais que a ação encurte o texto: entradas
+    /// muito grandes fazem o modelo ignorar trechos do meio.
+    private static let absoluteMaxCharacters = 8_000
 
     private static let minimumChunkCharacters = 900
 
@@ -88,14 +87,21 @@ final class TextProcessor: Sendable {
 
     // MARK: - Processamento
 
+    /// `customInstruction` vem do campo livre do painel flutuante. Quando é
+    /// `nil`, vale a instrução gravada nas Preferências.
     func stream(
         _ text: String,
-        action: CorrectionAction
+        action: CorrectionAction,
+        customInstruction: String? = nil
     ) -> AsyncThrowingStream<ProcessingUpdate, Error> {
         AsyncThrowingStream { continuation in
             let work = Task {
                 do {
-                    try await self.run(text, action: action) { update in
+                    try await self.run(
+                        text,
+                        action: action,
+                        customInstruction: customInstruction
+                    ) { update in
                         continuation.yield(update)
                     }
                     continuation.finish()
@@ -110,6 +116,7 @@ final class TextProcessor: Sendable {
     private func run(
         _ text: String,
         action: CorrectionAction,
+        customInstruction: String?,
         emit: @Sendable (ProcessingUpdate) -> Void
     ) async throws {
         if let unavailable = Self.availabilityMessage() {
@@ -122,7 +129,9 @@ final class TextProcessor: Sendable {
             return
         }
 
-        let instructions = action.prompt(customInstruction: AppPreferences.customPrompt)
+        let instructions = action.prompt(
+            customInstruction: customInstruction ?? AppPreferences.customPrompt
+        )
         let plan = await Self.plan(
             for: envelope.content,
             action: action,
@@ -133,15 +142,19 @@ final class TextProcessor: Sendable {
             maxCharacters: plan.maxCharactersPerChunk
         )
 
-        if chunks.count > 1, action == .summarize {
-            let summary = try await summarize(
+        // Resumo, pontos, lista e tabela produzem uma estrutura única. Fatiar e
+        // concatenar geraria várias listas soltas, então aqui o texto é
+        // processado por partes e depois consolidado numa só.
+        if chunks.count > 1, action.reformatsWholeText {
+            let condensed = try await condense(
                 chunks,
+                action: action,
                 instructions: instructions,
                 plan: plan,
                 envelope: envelope,
                 emit: emit
             )
-            emit(.finished(envelope.wrapping(summary)))
+            emit(.finished(envelope.wrapping(condensed)))
             return
         }
 
@@ -166,10 +179,11 @@ final class TextProcessor: Sendable {
         )))
     }
 
-    /// Resumo em duas etapas: resume cada bloco e depois consolida os resumos
+    /// Duas etapas: processa cada bloco e depois consolida os resultados
     /// parciais, se eles couberem numa passada só.
-    private func summarize(
+    private func condense(
         _ chunks: [TextChunk],
+        action: CorrectionAction,
         instructions: String,
         plan: Plan,
         envelope: TextEnvelope,
@@ -180,7 +194,7 @@ final class TextProcessor: Sendable {
             try Task.checkCancellation()
             let result = try await process(
                 chunk.text,
-                action: .summarize,
+                action: action,
                 instructions: instructions,
                 plan: plan
             ) { partial in
@@ -198,7 +212,7 @@ final class TextProcessor: Sendable {
         do {
             return try await process(
                 combined,
-                action: .summarize,
+                action: action,
                 instructions: instructions,
                 plan: plan
             ) { partial in
@@ -440,20 +454,22 @@ final class TextProcessor: Sendable {
         instructionTokens: Int,
         action: CorrectionAction
     ) -> Int {
-        // Dois tetos independentes: a janela de contexto, que é matemática, e a
-        // fidelidade da saída, que foi medida. Vale o menor dos dois — na
-        // prática, a fidelidade nas ações de transformação.
-        let practical = action.condensesText
-            ? summaryMaxCharacters
-            : transformationMaxCharacters
+        // Dois tetos independentes. O primeiro é a fidelidade da saída, que foi
+        // medida: como o modelo não escreve mais que ~2.400 caracteres por
+        // resposta, a entrada que cabe depende de quanto a ação alonga o texto.
+        // Corrigir quase não alonga, então aceita bloco maior; formalizar
+        // alonga bastante, então aceita menos.
+        let byOutput = Int(Double(outputCeilingCharacters) / action.expectedOutputRatio)
 
+        // O segundo é a janela de contexto, que é aritmética: entrada, saída e
+        // instruções precisam caber juntas.
         let usable = context - instructionTokens - contextReserve
-        guard usable > 0 else { return min(fallbackMaxCharsPerChunk, practical) }
+        let byContext = usable > 0
+            ? Int((Double(usable) / (1 + action.expectedOutputRatio)) * charactersPerToken)
+            : fallbackMaxCharsPerChunk
 
-        // Entrada e saída dividem a mesma janela.
-        let inputTokens = Double(usable) / (1 + action.expectedOutputRatio)
-        let contextBudget = Int(inputTokens * charactersPerToken)
-        return max(minimumChunkCharacters, min(contextBudget, practical))
+        let budget = min(byOutput, byContext, absoluteMaxCharacters)
+        return max(minimumChunkCharacters, budget)
     }
 
     private static func tokenCount(

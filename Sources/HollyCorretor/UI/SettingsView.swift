@@ -10,6 +10,7 @@ final class SettingsViewController: NSViewController, NSTextViewDelegate {
     private var launchToggle: NSButton!
     private var historyToggle: NSButton!
     private var cloudToggle: NSButton!
+    private var pillToggle: NSButton!
     private var promptTextView: NSTextView!
 
     private struct ShortcutRow {
@@ -47,6 +48,21 @@ final class SettingsViewController: NSViewController, NSTextViewDelegate {
         )
         launchToggle.state = SMAppService.mainApp.status == .enabled ? .on : .off
         stack.addArrangedSubview(launchToggle)
+
+        pillToggle = NSButton(
+            checkboxWithTitle: "Mostrar o botão do HollyCorretor ao selecionar texto",
+            target: self,
+            action: #selector(togglePill)
+        )
+        pillToggle.state = AppPreferences.showsSelectionPill ? .on : .off
+        pillToggle.toolTip = "Funciona em qualquer aplicativo, inclusive nos que não têm as Ferramentas de Escrita da Apple."
+        stack.addArrangedSubview(pillToggle)
+
+        let pillHelp = NSTextField(wrappingLabelWithString:
+            "Ao selecionar um texto em qualquer aplicativo, aparece uma pastilha ao lado da seleção. Clicando nela, abre o painel de ações. Exige a permissão de Acessibilidade.")
+        pillHelp.font = .preferredFont(forTextStyle: .caption2)
+        pillHelp.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(pillHelp)
 
         historyToggle = NSButton(
             checkboxWithTitle: "Salvar os 10 resultados mais recentes no histórico local",
@@ -144,6 +160,16 @@ final class SettingsViewController: NSViewController, NSTextViewDelegate {
         launchToggle.state = SMAppService.mainApp.status == .enabled ? .on : .off
         historyToggle.state = AppPreferences.shouldSaveHistory ? .on : .off
         cloudToggle.state = AppPreferences.usesPrivateCloudCompute ? .on : .off
+        pillToggle.state = AppPreferences.showsSelectionPill ? .on : .off
+    }
+
+    @objc private func togglePill() {
+        UserDefaults.standard.set(
+            pillToggle.state == .on,
+            forKey: AppPreferences.selectionPillKey
+        )
+        // O delegate do aplicativo religa ou desliga o vigia ao notar a mudança.
+        NotificationCenter.default.post(name: .hollySelectionPillPreferenceChanged, object: nil)
     }
 
     @objc private func toggleLaunchAtLogin() {

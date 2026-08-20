@@ -60,6 +60,11 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     private var historyWindowController: NSWindowController?
     private var isProcessing = false
     private var currentTask: Task<Void, Never>?
+    private var selectionWatcher: SelectionWatcher?
+    private var selectionPill: SelectionPill?
+    private var actionPanelWindow: FloatingPanel?
+    private var lastHit: SelectionWatcher.Hit?
+    private var pillMenuItem: NSMenuItem?
     private var launchAtLoginItem: NSMenuItem?
     private var aiWarningItem: NSMenuItem?
     private var aiWarningSeparator: NSMenuItem?
@@ -76,6 +81,24 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         buildMenu()
         setupShortcuts()
         refreshAIStatus()
+        startSelectionWatcherIfEnabled()
+
+        NotificationCenter.default.addObserver(
+            forName: .hollySelectionPillPreferenceChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if AppPreferences.showsSelectionPill {
+                    if !self.startSelectionWatcherIfEnabled() {
+                        self.requestAccessibilityPermission()
+                    }
+                } else {
+                    self.stopSelectionWatcher()
+                }
+            }
+        }
     }
 
     private func buildMenu() {
@@ -99,7 +122,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         menu.addItem(warningSeparator)
         aiWarningSeparator = warningSeparator
 
-        let correctItem = NSMenuItem(title: "Corrigir texto selecionado", action: #selector(correctSelectedText), keyEquivalent: "")
+        let correctItem = NSMenuItem(title: "Revisar texto selecionado", action: #selector(correctSelectedText), keyEquivalent: "")
         correctItem.target = self
         menu.addItem(correctItem)
 
@@ -135,6 +158,13 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         
         menu.addItem(.separator())
 
+        let pillItem = NSMenuItem(title: "Botão ao selecionar texto", action: #selector(toggleSelectionPill), keyEquivalent: "")
+        pillItem.target = self
+        pillItem.state = AppPreferences.showsSelectionPill ? .on : .off
+        pillItem.toolTip = "Mostra a pastilha do HollyCorretor ao lado de qualquer texto selecionado, em qualquer aplicativo."
+        menu.addItem(pillItem)
+        pillMenuItem = pillItem
+
         let loginItem = NSMenuItem(title: "Iniciar com o Mac", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         loginItem.target = self
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
@@ -162,6 +192,13 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     nonisolated func menuWillOpen(_ menu: NSMenu) {
         MainActor.assumeIsolated {
             launchAtLoginItem?.state = SMAppService.mainApp.status == .enabled ? .on : .off
+            // A permissão pode ter sido concedida depois da abertura; tenta de
+            // novo em vez de exigir que a pessoa reabra o aplicativo.
+            if AppPreferences.showsSelectionPill, selectionWatcher?.isRunning != true {
+                startSelectionWatcherIfEnabled()
+            }
+            selectionWatcher?.reenableIfNeeded()
+            refreshPillMenuItem()
             refreshAIStatus()
         }
     }
@@ -254,7 +291,8 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         _ action: CorrectionAction,
         selection: CapturedSelection,
         targetApp: NSRunningApplication?,
-        clipboardSnapshot: ClipboardSnapshot
+        clipboardSnapshot: ClipboardSnapshot,
+        customInstruction: String? = nil
     ) {
         if action == .markdown {
             saveAsMarkdownFile(
@@ -267,7 +305,8 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                 selection,
                 action: action,
                 targetApp: targetApp,
-                clipboardSnapshot: clipboardSnapshot
+                clipboardSnapshot: clipboardSnapshot,
+                customInstruction: customInstruction
             )
         }
     }
@@ -310,7 +349,17 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         }
     }
 
-    @objc private func requestAccessibilityPermission() { _ = checkAccessibilityPermission(prompt: true) }
+    @objc private func requestAccessibilityPermission() {
+        if checkAccessibilityPermission(prompt: true) {
+            startSelectionWatcherIfEnabled()
+            return
+        }
+        // O pedido do sistema só aparece uma vez por versão do binário; abrir o
+        // painel direto evita a pessoa procurar onde autorizar.
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+    }
 
     @objc private func toggleLaunchAtLogin() {
         do {
@@ -547,7 +596,8 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         _ selection: CapturedSelection,
         action: CorrectionAction,
         targetApp: NSRunningApplication?,
-        clipboardSnapshot: ClipboardSnapshot
+        clipboardSnapshot: ClipboardSnapshot,
+        customInstruction: String? = nil
     ) {
         let panel = makePreviewPanel()
 
@@ -600,7 +650,11 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             guard let self else { return }
             do {
                 var finalText = ""
-                for try await update in self.processor.stream(selection.text, action: action) {
+                for try await update in self.processor.stream(
+                    selection.text,
+                    action: action,
+                    customInstruction: customInstruction
+                ) {
                     switch update {
                     case .partial(let text):
                         previewController?.updateStreamingText(text)
@@ -758,6 +812,155 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         } else {
             showAlert(title: "Apple Intelligence ativa", message: "Tudo certo — o modelo on-device está disponível.")
         }
+    }
+
+    // MARK: - Botão flutuante de seleção
+
+    /// Liga o vigia que faz a pastilha do HollyCorretor aparecer ao lado de
+    /// qualquer texto selecionado, em qualquer aplicativo. É o que a ferramenta
+    /// do sistema não consegue fazer fora dos campos de texto nativos.
+    @discardableResult
+    private func startSelectionWatcherIfEnabled() -> Bool {
+        guard AppPreferences.showsSelectionPill else {
+            stopSelectionWatcher()
+            return false
+        }
+        guard checkAccessibilityPermission(prompt: false) else {
+            // Sem a permissão o recurso simplesmente não acontece. Antes isso
+            // era silencioso; agora o menu mostra o que está faltando.
+            logger.info("Botão flutuante aguardando a permissão de Acessibilidade.")
+            stopSelectionWatcher()
+            return false
+        }
+
+        let pill = selectionPill ?? SelectionPill { [weak self] in
+            self?.pillActivated()
+        }
+        selectionPill = pill
+
+        let watcher = selectionWatcher ?? SelectionWatcher()
+        watcher.onShow = { [weak self] hit in
+            self?.lastHit = hit
+            guard self?.actionPanelWindow == nil, self?.isProcessing == false else { return }
+            pill.show(at: hit.anchor)
+        }
+        watcher.onHide = { [weak self] in
+            self?.lastHit = nil
+            pill.hide()
+        }
+        selectionWatcher = watcher
+
+        let started = watcher.start()
+        if !started {
+            showAlert(
+                title: "Não foi possível ligar o botão flutuante",
+                message: "O macOS recusou o monitoramento de eventos. Confirme a permissão em Ajustes do Sistema › Privacidade e Segurança › Acessibilidade e reabra o HollyCorretor."
+            )
+        }
+        refreshPillMenuItem()
+        return started
+    }
+
+    /// Deixa visível no menu quando o botão flutuante está ligado mas parado
+    /// por falta de permissão — o caso mais comum logo depois de recompilar.
+    private func refreshPillMenuItem() {
+        guard let item = pillMenuItem else { return }
+        let wanted = AppPreferences.showsSelectionPill
+        let running = selectionWatcher?.isRunning ?? false
+
+        item.state = wanted ? .on : .off
+        if wanted && !running {
+            item.title = "Botão ao selecionar texto — falta permissão"
+            item.toolTip = "Autorize o HollyCorretor em Ajustes do Sistema › Privacidade e Segurança › Acessibilidade."
+        } else {
+            item.title = "Botão ao selecionar texto"
+            item.toolTip = "Mostra a pastilha do HollyCorretor ao lado de qualquer texto selecionado, em qualquer aplicativo."
+        }
+    }
+
+    private func stopSelectionWatcher() {
+        selectionWatcher?.stop()
+        selectionWatcher = nil
+        selectionPill?.hide()
+        lastHit = nil
+        pillMenuItem?.state = .off
+    }
+
+    @objc private func toggleSelectionPill() {
+        let novo = !AppPreferences.showsSelectionPill
+        UserDefaults.standard.set(novo, forKey: AppPreferences.selectionPillKey)
+        guard novo else {
+            stopSelectionWatcher()
+            refreshPillMenuItem()
+            return
+        }
+        if !startSelectionWatcherIfEnabled() {
+            requestAccessibilityPermission()
+        }
+    }
+
+    /// A pastilha foi clicada: guarda a seleção e abre o painel de ações.
+    private func pillActivated() {
+        guard let hit = lastHit else { return }
+        guard !isProcessing else {
+            NSSound.beep()
+            return
+        }
+
+        // Precisa ser lido antes de o painel aparecer e tomar o foco.
+        let targetApp = NSWorkspace.shared.frontmostApplication
+        let selection = CapturedSelection(
+            text: hit.text,
+            element: hit.element,
+            clipboardChangeCount: nil
+        )
+        processor.prewarm()
+        showActionPanel(for: selection, targetApp: targetApp, anchor: hit.anchor)
+    }
+
+    private func showActionPanel(
+        for selection: CapturedSelection,
+        targetApp: NSRunningApplication?,
+        anchor: NSRect
+    ) {
+        closeActionPanel()
+
+        let controller = ActionPanel(
+            onAction: { [weak self] action, instruction in
+                guard let self else { return }
+                self.closeActionPanel()
+                guard !self.isProcessing else {
+                    NSSound.beep()
+                    return
+                }
+                self.isProcessing = true
+                self.updateStatusIcon(processing: true)
+                self.start(
+                    action,
+                    selection: selection,
+                    targetApp: targetApp,
+                    clipboardSnapshot: ClipboardSnapshot(),
+                    customInstruction: instruction
+                )
+            },
+            onDismiss: { [weak self] in
+                self?.closeActionPanel()
+            }
+        )
+
+        let panel = FloatingPanel(size: NSSize(width: 268, height: 380), acceptsKeyboard: true)
+        panel.contentViewController = controller
+        panel.setContentSize(controller.view.fittingSize)
+        panel.position(near: anchor)
+
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+        actionPanelWindow = panel
+    }
+
+    private func closeActionPanel() {
+        actionPanelWindow?.orderOut(nil)
+        actionPanelWindow = nil
     }
 
     private func checkAccessibilityPermission(prompt: Bool) -> Bool {
