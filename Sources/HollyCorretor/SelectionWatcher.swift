@@ -25,6 +25,11 @@ final class SelectionWatcher {
     var onShow: ((Hit) -> Void)?
     var onHide: (() -> Void)?
 
+    /// Responde se um clique caiu sobre a interface do próprio HollyCorretor.
+    /// Sem isto, o clique na pastilha seria tratado como "o usuário clicou fora"
+    /// e desfaria a seleção antes de a ação chegar a rodar.
+    var shouldIgnoreClick: ((NSPoint) -> Bool)?
+
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var pending: Task<Void, Never>?
@@ -67,7 +72,8 @@ final class SelectionWatcher {
                 let watcher = Unmanaged<SelectionWatcher>
                     .fromOpaque(refcon)
                     .takeUnretainedValue()
-                MainActor.assumeIsolated { watcher.handle(type) }
+                let location = event.location
+                MainActor.assumeIsolated { watcher.handle(type, at: location) }
                 return Unmanaged.passUnretained(event)
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
@@ -112,11 +118,17 @@ final class SelectionWatcher {
 
     // MARK: - Eventos
 
-    private func handle(_ type: CGEventType) {
+    private func handle(_ type: CGEventType, at location: CGPoint) {
         switch type {
         case .leftMouseUp:
+            guard !isOnOwnInterface(location) else { return }
             scheduleCheck()
-        case .leftMouseDown, .rightMouseDown, .scrollWheel:
+        case .leftMouseDown, .rightMouseDown:
+            // O clique na própria pastilha não pode ser lido como "clicou fora".
+            guard !isOnOwnInterface(location) else { return }
+            pending?.cancel()
+            onHide?()
+        case .scrollWheel:
             pending?.cancel()
             onHide?()
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
@@ -214,6 +226,17 @@ final class SelectionWatcher {
               rect.width > 0 || rect.height > 0 else { return nil }
 
         return Self.cocoaRect(fromQuartz: rect)
+    }
+
+    private func isOnOwnInterface(_ location: CGPoint) -> Bool {
+        guard let shouldIgnoreClick else { return false }
+        let point = Self.cocoaPoint(fromQuartz: location)
+        return shouldIgnoreClick(point)
+    }
+
+    static func cocoaPoint(fromQuartz point: CGPoint) -> NSPoint {
+        guard let primary = NSScreen.screens.first else { return point }
+        return NSPoint(x: point.x, y: primary.frame.maxY - point.y)
     }
 
     private func cursorAnchor() -> NSRect {

@@ -66,6 +66,9 @@ final class SelectionPill {
 
     var isVisible: Bool { panel?.isVisible ?? false }
 
+    /// Área ocupada na tela, para o vigia saber que um clique ali é nosso.
+    var frame: NSRect? { panel?.isVisible == true ? panel?.frame : nil }
+
     func show(at anchor: NSRect) {
         let panel = self.panel ?? makePanel()
         self.panel = panel

@@ -357,12 +357,19 @@ final class TextProcessor: Sendable {
         // O Private Cloud Compute não aceita configuração de guardrails, então
         // ele fica restrito aos textos longos que o modelo local não comporta,
         // e só quando a pessoa liga a opção explicitamente.
+        //
+        // `#available` cuida da versão em que o app roda; `#if compiler` cuida
+        // da versão do SDK com que ele é compilado. Sem o segundo, o projeto
+        // deixa de compilar em quem tenha só o SDK do macOS 26 — inclusive nos
+        // runners da validação contínua.
+        #if compiler(>=6.4)
         if plan.usesPrivateCloudCompute, #available(macOS 27.0, *) {
             let cloud = PrivateCloudComputeLanguageModel()
             if case .available = cloud.availability {
                 return LanguageModelSession(model: cloud, instructions: instructions)
             }
         }
+        #endif
         return LanguageModelSession(model: onDeviceModel, instructions: instructions)
     }
 
@@ -415,38 +422,35 @@ final class TextProcessor: Sendable {
             action: action
         )
 
-        guard AppPreferences.usesPrivateCloudCompute,
-              content.count > localBudget,
-              #available(macOS 27.0, *) else {
-            return Plan(
-                maxCharactersPerChunk: localBudget,
-                contextSize: localContext,
-                instructionTokens: instructionTokens,
-                usesPrivateCloudCompute: false
-            )
-        }
-
-        let cloud = PrivateCloudComputeLanguageModel()
-        guard case .available = cloud.availability,
-              let cloudContext = try? await cloud.contextSize else {
-            return Plan(
-                maxCharactersPerChunk: localBudget,
-                contextSize: localContext,
-                instructionTokens: instructionTokens,
-                usesPrivateCloudCompute: false
-            )
-        }
-
-        return Plan(
-            maxCharactersPerChunk: characters(
-                context: cloudContext,
-                instructionTokens: instructionTokens,
-                action: action
-            ),
-            contextSize: cloudContext,
+        let local = Plan(
+            maxCharactersPerChunk: localBudget,
+            contextSize: localContext,
             instructionTokens: instructionTokens,
-            usesPrivateCloudCompute: true
+            usesPrivateCloudCompute: false
         )
+
+        #if compiler(>=6.4)
+        if AppPreferences.usesPrivateCloudCompute,
+           content.count > localBudget,
+           #available(macOS 27.0, *) {
+            let cloud = PrivateCloudComputeLanguageModel()
+            if case .available = cloud.availability,
+               let cloudContext = try? await cloud.contextSize {
+                return Plan(
+                    maxCharactersPerChunk: characters(
+                        context: cloudContext,
+                        instructionTokens: instructionTokens,
+                        action: action
+                    ),
+                    contextSize: cloudContext,
+                    instructionTokens: instructionTokens,
+                    usesPrivateCloudCompute: true
+                )
+            }
+        }
+        #endif
+
+        return local
     }
 
     private static func characters(
@@ -490,9 +494,11 @@ final class TextProcessor: Sendable {
     /// app tem alvo macOS 26, o compilador não avisa da troca, e capturar só o
     /// tipo antigo faz todo o tratamento de erro parar de funcionar em silêncio.
     private static func isContextOverflow(_ error: Error) -> Bool {
+        #if compiler(>=6.4)
         if #available(macOS 27.0, *), let novo = error as? LanguageModelError {
             if case .contextSizeExceeded = novo { return true }
         }
+        #endif
         if let antigo = error as? LanguageModelSession.GenerationError {
             if case .exceededContextWindowSize = antigo { return true }
         }
@@ -504,15 +510,18 @@ final class TextProcessor: Sendable {
             return processing.errorDescription ?? error.localizedDescription
         }
 
+        #if compiler(>=6.4)
         if #available(macOS 27.0, *), let novo = error as? LanguageModelError {
             return message(for: novo)
         }
+        #endif
         if let antigo = error as? LanguageModelSession.GenerationError {
             return message(for: antigo)
         }
         return error.localizedDescription
     }
 
+    #if compiler(>=6.4)
     @available(macOS 27.0, *)
     private static func message(for error: LanguageModelError) -> String {
         switch error {
@@ -534,6 +543,7 @@ final class TextProcessor: Sendable {
             return error.localizedDescription
         }
     }
+    #endif
 
     private static func message(for error: LanguageModelSession.GenerationError) -> String {
         switch error {

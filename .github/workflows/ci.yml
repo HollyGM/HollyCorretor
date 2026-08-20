@@ -44,16 +44,24 @@ jobs:
 
       - name: Compilar com plataforma elevada
         run: |
-          set -euo pipefail
+          set -uo pipefail
           cp Package.swift Package.swift.original
           # Eleva o alvo só para esta compilação; o pacote não é alterado no repositório.
           sed -i '' 's/\.macOS("26\.0")/.macOS("27.0")/' Package.swift
-          swift build --product HollyCorretor 2>&1 | tee build.log || true
+          swift build --product HollyCorretor 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
           cp Package.swift.original Package.swift
 
+          # A distinção importa: "não encontrei nada" e "não consegui procurar"
+          # são resultados diferentes, e tratá-los igual transforma esta etapa
+          # num carimbo verde que não verifica nada.
           if grep -q "was deprecated in macOS" build.log; then
             echo "::warning::Há APIs depreciadas em uso. Confira se ainda existe um caminho equivalente para a versão nova."
             grep "was deprecated in macOS" build.log | sort -u
+          elif [ "$status" -ne 0 ]; then
+            echo "::warning::A auditoria não pôde ser feita: a compilação falhou. O runner provavelmente ainda não tem o SDK necessário."
+            echo "----- fim do registro de compilação -----"
+            tail -40 build.log
           else
             echo "Nenhuma API depreciada em uso."
           fi

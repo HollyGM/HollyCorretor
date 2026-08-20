@@ -379,11 +379,14 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     // MARK: - Text Handling (Async/Await)
 
     private func handle(action: CorrectionAction) {
+        logger.info("Ação pedida: \(action.title, privacy: .public)")
         guard !isProcessing else {
+            logger.info("Recusada: já há um processamento em andamento.")
             NSSound.beep()
             return
         }
         guard checkAccessibilityPermission(prompt: true) else {
+            logger.error("Recusada: sem permissão de Acessibilidade.")
             showAlert(title: "Permissão necessária", message: "Ative Acessibilidade.")
             return
         }
@@ -396,6 +399,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         if action != .markdown { processor.prewarm() }
 
         if let selection = selectedTextViaAccessibility() {
+            logger.info("Seleção lida pela Acessibilidade: \(selection.text.count, privacy: .public) caracteres.")
             isProcessing = true
             updateStatusIcon(processing: true)
             start(action, selection: selection, targetApp: targetApp, clipboardSnapshot: snapshot)
@@ -429,6 +433,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                 maxAttempts: 15
             )
 
+            logger.info("Área de transferência mudou após ⌘C: \(clipboardChanged, privacy: .public)")
             if clipboardChanged, let selectedText = extractPlainText(from: pasteboard) {
                 let selection = CapturedSelection(
                     text: selectedText,
@@ -649,6 +654,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         currentTask = Task { [weak self, weak panel, weak previewController] in
             guard let self else { return }
             do {
+                self.logger.info("Iniciando geração para \(action.title, privacy: .public)")
                 var finalText = ""
                 for try await update in self.processor.stream(
                     selection.text,
@@ -669,6 +675,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                 guard !Task.isCancelled else { return }
 
                 self.currentTask = nil
+                self.logger.info("Geração concluída: \(finalText.count, privacy: .public) caracteres.")
                 self.updateStatusIcon(processing: false)
                 previewController?.finishStreaming(
                     with: finalText.isEmpty ? selection.text : finalText
@@ -684,6 +691,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                 clipboardSnapshot.restoreIfUnchanged(
                     since: selection.clipboardChangeCount
                 )
+                self.logger.error("Falha ao processar: \(error.localizedDescription, privacy: .public)")
                 self.showAlert(
                     title: "Falha ao processar",
                     message: error.localizedDescription
@@ -848,6 +856,12 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             self?.lastHit = nil
             pill.hide()
         }
+        watcher.shouldIgnoreClick = { [weak self] point in
+            guard let self else { return false }
+            if let frame = pill.frame, frame.contains(point) { return true }
+            if let frame = self.actionPanelWindow?.frame, frame.contains(point) { return true }
+            return false
+        }
         selectionWatcher = watcher
 
         let started = watcher.start()
@@ -901,11 +915,16 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
 
     /// A pastilha foi clicada: guarda a seleção e abre o painel de ações.
     private func pillActivated() {
-        guard let hit = lastHit else { return }
+        guard let hit = lastHit else {
+            logger.error("Pastilha clicada sem seleção guardada.")
+            return
+        }
         guard !isProcessing else {
+            logger.info("Pastilha clicada durante outro processamento.")
             NSSound.beep()
             return
         }
+        logger.info("Pastilha acionada com \(hit.text.count, privacy: .public) caracteres.")
 
         // Precisa ser lido antes de o painel aparecer e tomar o foco.
         let targetApp = NSWorkspace.shared.frontmostApplication
