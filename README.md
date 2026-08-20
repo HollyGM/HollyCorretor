@@ -177,15 +177,55 @@ assinatura ad hoc, essa identidade muda a cada compilação, e o sistema passa a
 tratar o app como se fosse outro — exigindo autorizar de novo em **Ajustes do
 Sistema › Privacidade e Segurança › Acessibilidade** toda vez que você compila.
 
-Para ter identidade estável, crie um certificado de assinatura de código no
-**Acesso às Chaves** (Assistente de Certificado › Criar um certificado, tipo
-"Assinatura de código") e informe o nome dele ao compilar:
+Para ter identidade estável, crie um certificado de assinatura de código. O
+aplicativo **Acesso às Chaves** não existe mais no macOS 27, então o caminho é o
+Terminal:
+
+```bash
+# 1. Gerar o certificado, já com a finalidade de assinatura de código
+cat > /tmp/holly.cnf <<'CNF'
+[ req ]
+distinguished_name = dn
+x509_extensions    = ext
+prompt             = no
+[ dn ]
+CN = HollyCorretor
+[ ext ]
+basicConstraints       = critical,CA:false
+keyUsage               = critical,digitalSignature
+extendedKeyUsage       = critical,codeSigning
+subjectKeyIdentifier   = hash
+CNF
+openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+  -keyout /tmp/holly.key -out /tmp/holly.crt -config /tmp/holly.cnf
+
+# O -legacy e a senha são necessários: o macOS não lê o formato novo do
+# OpenSSL 3, e senha vazia faz a verificação do MAC falhar na importação.
+openssl pkcs12 -export -legacy -out /tmp/HollyCorretor.p12 \
+  -inkey /tmp/holly.key -in /tmp/holly.crt -name "HollyCorretor" -passout pass:holly
+
+# 2. Importar e marcar como confiável
+security import /tmp/HollyCorretor.p12 -k ~/Library/Keychains/login.keychain-db \
+  -P holly -T /usr/bin/codesign
+security add-trusted-cert -r trustRoot -p codeSign \
+  -k ~/Library/Keychains/login.keychain-db /tmp/holly.crt
+
+# 3. Conferir
+security find-identity -v -p codesigning
+```
+
+Com o certificado no lugar, informe o nome dele ao compilar:
 
 ```bash
 HOLLY_SIGN_IDENTITY="Nome do certificado" ./scripts/run.sh
 ```
 
 Sem a variável, o script continua usando assinatura ad hoc e avisa a respeito.
+
+A diferença aparece no requisito designado, que é o que o macOS guarda ao
+autorizar o aplicativo. Com assinatura ad hoc ele fixa o `cdhash` do binário, que
+muda a cada compilação; com o certificado, fixa o identificador e o certificado,
+que não mudam — e a autorização de Acessibilidade sobrevive às recompilações.
 
 ## Distribuição
 
