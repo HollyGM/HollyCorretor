@@ -63,5 +63,8 @@ jobs:
             echo "----- fim do registro de compilação -----"
             tail -40 build.log
           else
-            echo "Nenhuma API depreciada em uso."
+            # Diz contra qual SDK a conferência foi feita: enquanto os runners
+            # não tiverem o SDK do macOS 27, as APIs que ele depreciou ainda não
+            # estão marcadas, e o resultado limpo diz menos do que parece.
+            echo "Nenhuma API depreciada em uso (conferido com o SDK $(xcrun --show-sdk-version --sdk macosx))."
           fi
