@@ -22,6 +22,24 @@ command -v swift >/dev/null
 command -v codesign >/dev/null
 test -f "$INFO_TEMPLATE"
 
+# Conferido antes de qualquer coisa: uma identidade inexistente só falharia na
+# última etapa, depois de o pacote anterior já ter sido apagado.
+if [[ "$SIGN_IDENTITY" != "-" ]]; then
+    if ! /usr/bin/security find-identity -v -p codesigning | grep -qF "$SIGN_IDENTITY"; then
+        echo "Erro: não há identidade de assinatura chamada \"$SIGN_IDENTITY\" no Chaveiro." >&2
+        echo "" >&2
+        echo "Crie uma em Acesso às Chaves › menu Acesso às Chaves › Assistente de" >&2
+        echo "Certificado › Criar um certificado, com:" >&2
+        echo "  Nome................: $SIGN_IDENTITY" >&2
+        echo "  Tipo de identidade..: Raiz autoassinada" >&2
+        echo "  Tipo de certificado.: Assinatura de código" >&2
+        echo "" >&2
+        echo "Identidades disponíveis hoje:" >&2
+        /usr/bin/security find-identity -v -p codesigning >&2
+        exit 1
+    fi
+fi
+
 cd "$PROJECT_DIR"
 swift build -c release --product "$APP_NAME"
 BIN_DIR="$(swift build -c release --show-bin-path)"
