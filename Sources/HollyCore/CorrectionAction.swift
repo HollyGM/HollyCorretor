@@ -41,6 +41,57 @@ public enum CorrectionAction: Int, CaseIterable, Sendable {
         }
     }
 
+    /// Correção ortográfica não deve variar entre execuções: o mesmo texto tem
+    /// que produzir a mesma saída. Amostragem gulosa garante isso e ainda sai
+    /// um pouco mais rápida. As demais ações se beneficiam de variação.
+    public var prefersDeterministicOutput: Bool {
+        self == .correct || self == .markdown
+    }
+
+    /// Só o resumo encurta o texto por definição. As demais ações precisam
+    /// devolver o conteúdo inteiro, e por isso trabalham com blocos menores.
+    public var condensesText: Bool {
+        self == .summarize
+    }
+
+    /// Proporção mínima aceitável entre o tamanho da saída e o da entrada.
+    /// Abaixo disso o modelo condensou ou truncou em vez de transformar, e o
+    /// bloco é dividido e refeito. `nil` desliga a conferência, para ações em
+    /// que encurtar é resultado legítimo.
+    public var minimumOutputRatio: Double? {
+        switch self {
+        case .correct:
+            0.90
+        case .formalize:
+            0.85
+        case .rewrite:
+            0.80
+        case .simplify:
+            // Tirar jargão costuma encurtar de verdade.
+            0.70
+        case .summarize, .custom, .markdown:
+            // O resumo encurta por definição, e a instrução personalizada é
+            // escrita pela pessoa: pode legitimamente pedir para encurtar.
+            nil
+        }
+    }
+
+    /// Quanto a saída cresce em relação à entrada. Serve para reservar espaço
+    /// na janela de contexto: entrada + saída + instruções precisam caber.
+    /// Formalizar costuma alongar o texto; resumir o encurta muito.
+    public var expectedOutputRatio: Double {
+        switch self {
+        case .summarize:
+            0.45
+        case .formalize:
+            1.35
+        case .correct, .markdown:
+            1.1
+        case .rewrite, .simplify, .custom:
+            1.25
+        }
+    }
+
     public func prompt(customInstruction: String? = nil) -> String {
         switch self {
         case .correct:

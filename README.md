@@ -33,7 +33,7 @@ a uma API de terceiros.
   Todo resultado é revisado antes de substituir o texto original.</em>
 </p>
 
-Versão atual: **0.2.0** — consulte o [histórico de versões](CHANGELOG.md).
+Versão atual: **0.3.0** — consulte o [histórico de versões](CHANGELOG.md).
 
 ## Compatibilidade
 
@@ -110,13 +110,31 @@ O HollyCorretor nunca envia a mensagem automaticamente.
 - O modelo padrão roda no dispositivo por meio da Apple Intelligence.
 - O aplicativo não contém chaves de API nem implementa chamadas de rede em tempo
   de execução.
-- Os 10 resultados mais recentes são salvos localmente por padrão. Essa opção pode
-  ser desativada em Preferências, e o histórico pode ser apagado pelo menu.
-- O histórico local não é criptografado pelo próprio aplicativo. Para textos
-  sigilosos, desative-o.
-- O conteúdo anterior da área de transferência só é restaurado se ela não tiver
-  sido alterada novamente; assim, uma cópia feita durante o processamento não é
-  sobrescrita.
+- O histórico **nasce desligado**. Quando ativado em Preferências, guarda os 10
+  resultados mais recentes em `~/Library/Application Support/HollyCorretor/`,
+  em arquivo com permissão restrita e proteção de dados — não mais em texto
+  claro dentro do plist de preferências. Pode ser apagado pelo menu.
+- O envio ao Private Cloud Compute também nasce desligado. Com a opção ativada,
+  apenas textos que não cabem no modelo local saem do aparelho, rumo aos
+  servidores da Apple. Para material sob sigilo, mantenha-a desligada.
+- Quando o aplicativo de origem expõe o campo pela API de Acessibilidade, o
+  resultado é escrito direto nele e a área de transferência não é tocada.
+- No caminho alternativo, que usa a área de transferência, o conteúdo anterior
+  só é restaurado se ela não tiver sido alterada novamente; assim, uma cópia
+  feita durante o processamento não é sobrescrita.
+
+## Limites do modelo local
+
+Numa tarefa de transformação, o modelo on-device devolve no máximo cerca de
+2.400 caracteres por resposta. Textos maiores são divididos automaticamente em
+blocos — preferindo fim de parágrafo, quebra de linha e fim de frase, nessa
+ordem — e recompostos ao final. O aplicativo ainda confere o tamanho de cada
+resposta e refaz o bloco dividido se o modelo tiver condensado o texto em vez de
+transformá-lo.
+
+Esse teto vem da fidelidade da saída, não da janela de contexto, que é bem maior
+(8.192 tokens). Para resumos, em que encurtar é o resultado desejado, os blocos
+podem ser bem maiores.
 
 Para relatar uma vulnerabilidade sem expor detalhes publicamente, consulte a
 [política de segurança](SECURITY.md).
@@ -152,12 +170,28 @@ O projeto utiliza `KeyboardShortcuts` 1.15.0, de Sindre Sorhus, distribuído sob
 Licença MIT. As atribuições e o texto aplicável estão em
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
+## Assinatura e a permissão de Acessibilidade
+
+O macOS identifica um aplicativo autorizado pela assinatura do binário. Com
+assinatura ad hoc, essa identidade muda a cada compilação, e o sistema passa a
+tratar o app como se fosse outro — exigindo autorizar de novo em **Ajustes do
+Sistema › Privacidade e Segurança › Acessibilidade** toda vez que você compila.
+
+Para ter identidade estável, crie um certificado de assinatura de código no
+**Acesso às Chaves** (Assistente de Certificado › Criar um certificado, tipo
+"Assinatura de código") e informe o nome dele ao compilar:
+
+```bash
+HOLLY_SIGN_IDENTITY="Nome do certificado" ./scripts/run.sh
+```
+
+Sem a variável, o script continua usando assinatura ad hoc e avisa a respeito.
+
 ## Distribuição
 
-O pacote gerado localmente recebe apenas uma assinatura ad hoc. Para distribuir um
-binário pronto a outras pessoas sem alertas do Gatekeeper, ainda será necessário
-usar uma conta Apple Developer, assinatura Developer ID e notarização. O código
-fonte pode ser compilado localmente sem essas credenciais.
+Para distribuir um binário pronto a outras pessoas sem alertas do Gatekeeper,
+ainda será necessário usar uma conta Apple Developer, assinatura Developer ID e
+notarização. O código fonte pode ser compilado localmente sem essas credenciais.
 
 ## Licença
 

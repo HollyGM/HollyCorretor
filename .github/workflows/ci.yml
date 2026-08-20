@@ -10,16 +10,50 @@ permissions:
 
 jobs:
   build-and-test:
-    runs-on: macos-26
+    # O app declara alvo macOS 26, mas roda em máquinas com macOS 27. Testar só
+    # na versão do alvo deixou passar a troca de `GenerationError` por
+    # `LanguageModelError`, que desativou o tratamento de erro inteiro.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-26, macos-latest]
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Obter código
         uses: actions/checkout@v6
 
-      - name: Exibir versão do Swift
-        run: swift --version
+      - name: Exibir versões
+        run: |
+          sw_vers
+          swift --version
 
       - name: Executar testes
         run: ./scripts/test.sh
 
       - name: Gerar aplicativo
         run: ./scripts/build.sh
+
+  auditoria-de-depreciacoes:
+    # Compila com a plataforma elevada para que o compilador reporte APIs
+    # depreciadas em versões acima do alvo declarado. Sem isto, uma API que
+    # muda no macOS 27 permanece silenciosa até quebrar em produção.
+    runs-on: macos-latest
+    steps:
+      - name: Obter código
+        uses: actions/checkout@v4
+
+      - name: Compilar com plataforma elevada
+        run: |
+          set -euo pipefail
+          cp Package.swift Package.swift.original
+          # Eleva o alvo só para esta compilação; o pacote não é alterado no repositório.
+          sed -i '' 's/\.macOS("26\.0")/.macOS("27.0")/' Package.swift
+          swift build --product HollyCorretor 2>&1 | tee build.log || true
+          cp Package.swift.original Package.swift
+
+          if grep -q "was deprecated in macOS" build.log; then
+            echo "::warning::Há APIs depreciadas em uso. Confira se ainda existe um caminho equivalente para a versão nova."
+            grep "was deprecated in macOS" build.log | sort -u
+          else
+            echo "Nenhuma API depreciada em uso."
+          fi

@@ -3,14 +3,23 @@ import Foundation
 enum AppPreferences {
     static let customPromptKey = "customPrompt"
     static let saveHistoryKey = "saveHistory"
-    static let historyKey = "HollyCorretorHistory"
+    static let privateCloudComputeKey = "usePrivateCloudCompute"
+
+    /// Chave antiga: o histórico ficava em texto claro dentro do plist de
+    /// preferências. Continua declarada para a migração poder limpá-la.
+    static let legacyHistoryKey = "HollyCorretorHistory"
 
     private static let migrationKey = "didMigrateFromZapCorrector"
     private static let legacyBundleIdentifier = "local.zapcorrector.app"
-    private static let legacyHistoryKey = "ZapCorrectorHistory"
+    private static let legacyZapHistoryKey = "ZapCorrectorHistory"
 
     static func prepare() {
-        UserDefaults.standard.register(defaults: [saveHistoryKey: true])
+        UserDefaults.standard.register(defaults: [
+            // Nasce desligado: o app trata material sob sigilo profissional, e
+            // guardar isso por padrão inverte a expectativa de quem o usa.
+            saveHistoryKey: false,
+            privateCloudComputeKey: false
+        ])
         migrateLegacyPreferencesIfNeeded()
     }
 
@@ -20,6 +29,12 @@ enum AppPreferences {
 
     static var shouldSaveHistory: Bool {
         UserDefaults.standard.bool(forKey: saveHistoryKey)
+    }
+
+    /// Envia textos longos ao Private Cloud Compute da Apple quando eles não
+    /// cabem no modelo local. Sai do aparelho, por isso é decisão explícita.
+    static var usesPrivateCloudCompute: Bool {
+        UserDefaults.standard.bool(forKey: privateCloudComputeKey)
     }
 
     private static func migrateLegacyPreferencesIfNeeded() {
@@ -33,14 +48,25 @@ enum AppPreferences {
             defaults.set(customPrompt, forKey: customPromptKey)
         }
 
-        if defaults.data(forKey: historyKey) == nil {
-            let history = defaults.data(forKey: legacyHistoryKey)
-                ?? legacyDefaults?.data(forKey: legacyHistoryKey)
-            if let history {
-                defaults.set(history, forKey: historyKey)
-            }
-        }
-
         defaults.set(true, forKey: migrationKey)
+    }
+
+    /// Histórico deixado por versões anteriores no plist, para o `HistoryStore`
+    /// transferir ao arquivo protegido e apagar daqui.
+    static func takeLegacyHistoryData() -> Data? {
+        let defaults = UserDefaults.standard
+        let legacyDefaults = UserDefaults(suiteName: legacyBundleIdentifier)
+
+        let data = defaults.data(forKey: legacyHistoryKey)
+            ?? defaults.data(forKey: legacyZapHistoryKey)
+            ?? legacyDefaults?.data(forKey: legacyHistoryKey)
+            ?? legacyDefaults?.data(forKey: legacyZapHistoryKey)
+
+        defaults.removeObject(forKey: legacyHistoryKey)
+        defaults.removeObject(forKey: legacyZapHistoryKey)
+        legacyDefaults?.removeObject(forKey: legacyHistoryKey)
+        legacyDefaults?.removeObject(forKey: legacyZapHistoryKey)
+
+        return data
     }
 }

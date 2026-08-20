@@ -9,6 +9,7 @@ import ServiceManagement
 final class SettingsViewController: NSViewController, NSTextViewDelegate {
     private var launchToggle: NSButton!
     private var historyToggle: NSButton!
+    private var cloudToggle: NSButton!
     private var promptTextView: NSTextView!
 
     private struct ShortcutRow {
@@ -53,8 +54,23 @@ final class SettingsViewController: NSViewController, NSTextViewDelegate {
             action: #selector(toggleHistory)
         )
         historyToggle.state = AppPreferences.shouldSaveHistory ? .on : .off
-        historyToggle.toolTip = "Desative para que novos textos não sejam guardados pelo aplicativo."
+        historyToggle.toolTip = "Guarda os textos em arquivo protegido dentro do seu Mac. Desligado por padrão."
         stack.addArrangedSubview(historyToggle)
+
+        cloudToggle = NSButton(
+            checkboxWithTitle: "Usar o Private Cloud Compute em textos longos",
+            target: self,
+            action: #selector(toggleCloud)
+        )
+        cloudToggle.state = AppPreferences.usesPrivateCloudCompute ? .on : .off
+        cloudToggle.toolTip = "Só é acionado quando o texto não cabe no modelo local."
+        stack.addArrangedSubview(cloudToggle)
+
+        let cloudHelp = NSTextField(wrappingLabelWithString:
+            "Com esta opção ligada, textos que excedem a janela do modelo local são enviados aos servidores da Apple (Private Cloud Compute) em vez de fatiados. O conteúdo sai deste Mac. Mantenha desligada para textos sob sigilo.")
+        cloudHelp.font = .preferredFont(forTextStyle: .caption2)
+        cloudHelp.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(cloudHelp)
 
         for row in rows {
             let label = NSTextField(labelWithString: row.title)
@@ -101,7 +117,7 @@ final class SettingsViewController: NSViewController, NSTextViewDelegate {
         stack.addArrangedSubview(promptHelp)
 
         let privacyNote = NSTextField(wrappingLabelWithString:
-            "O processamento pela Apple Intelligence ocorre no Mac. O histórico, quando ativado, também fica somente neste dispositivo.")
+            "O processamento pela Apple Intelligence ocorre neste Mac. O histórico, quando ativado, é gravado em arquivo protegido dentro da sua pasta de usuário.")
         privacyNote.font = .preferredFont(forTextStyle: .caption1)
         privacyNote.textColor = .secondaryLabelColor
         stack.addArrangedSubview(privacyNote)
@@ -127,6 +143,7 @@ final class SettingsViewController: NSViewController, NSTextViewDelegate {
         super.viewWillAppear()
         launchToggle.state = SMAppService.mainApp.status == .enabled ? .on : .off
         historyToggle.state = AppPreferences.shouldSaveHistory ? .on : .off
+        cloudToggle.state = AppPreferences.usesPrivateCloudCompute ? .on : .off
     }
 
     @objc private func toggleLaunchAtLogin() {
@@ -151,6 +168,13 @@ final class SettingsViewController: NSViewController, NSTextViewDelegate {
         UserDefaults.standard.set(
             historyToggle.state == .on,
             forKey: AppPreferences.saveHistoryKey
+        )
+    }
+
+    @objc private func toggleCloud() {
+        UserDefaults.standard.set(
+            cloudToggle.state == .on,
+            forKey: AppPreferences.privateCloudComputeKey
         )
     }
 
