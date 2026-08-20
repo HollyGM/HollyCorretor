@@ -68,22 +68,29 @@ enum AppPreferences {
         defaults.set(true, forKey: migrationKey)
     }
 
-    /// Histórico deixado por versões anteriores no plist, para o `HistoryStore`
-    /// transferir ao arquivo protegido e apagar daqui.
-    static func takeLegacyHistoryData() -> Data? {
+    /// Histórico deixado por versões anteriores no plist. Apenas lê: apagar é
+    /// operação separada, feita só depois que o arquivo protegido foi gravado
+    /// com sucesso. Do contrário, um disco cheio ou uma pasta sem permissão de
+    /// escrita destruiria a única cópia que existe.
+    static func legacyHistoryData() -> Data? {
         let defaults = UserDefaults.standard
         let legacyDefaults = UserDefaults(suiteName: legacyBundleIdentifier)
 
-        let data = defaults.data(forKey: legacyHistoryKey)
+        return defaults.data(forKey: legacyHistoryKey)
             ?? defaults.data(forKey: legacyZapHistoryKey)
             ?? legacyDefaults?.data(forKey: legacyHistoryKey)
             ?? legacyDefaults?.data(forKey: legacyZapHistoryKey)
+    }
+
+    /// Remove o histórico em texto claro do plist. Só deve ser chamado depois de
+    /// a transferência ter dado certo.
+    static func removeLegacyHistoryData() {
+        let defaults = UserDefaults.standard
+        let legacyDefaults = UserDefaults(suiteName: legacyBundleIdentifier)
 
         defaults.removeObject(forKey: legacyHistoryKey)
         defaults.removeObject(forKey: legacyZapHistoryKey)
         legacyDefaults?.removeObject(forKey: legacyHistoryKey)
         legacyDefaults?.removeObject(forKey: legacyZapHistoryKey)
-
-        return data
     }
 }

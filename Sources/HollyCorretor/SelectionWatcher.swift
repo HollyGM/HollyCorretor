@@ -73,6 +73,13 @@ final class SelectionWatcher {
                     .fromOpaque(refcon)
                     .takeUnretainedValue()
                 let location = event.location
+
+                // A fonte deste tap é instalada no run loop principal, logo
+                // abaixo, então o callback chega sempre na thread principal e
+                // `assumeIsolated` é legítimo. A pré-condição deixa o invariante
+                // explícito: se alguém mudar onde a fonte é registrada, isto
+                // falha alto em vez de mexer em AppKit fora da thread principal.
+                dispatchPrecondition(condition: .onQueue(.main))
                 MainActor.assumeIsolated { watcher.handle(type, at: location) }
                 return Unmanaged.passUnretained(event)
             },

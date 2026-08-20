@@ -54,9 +54,14 @@ final class TextProcessor: Sendable {
     /// A janela de 8.192 tokens comporta muito mais, mas quem manda é a saída.
     private static let outputCeilingCharacters = 2_400
 
-    /// Nenhum bloco passa disto, por mais que a ação encurte o texto: entradas
-    /// muito grandes fazem o modelo ignorar trechos do meio.
+    /// Nenhum bloco do modelo local passa disto, por mais que a ação encurte o
+    /// texto: entradas muito grandes fazem o modelo ignorar trechos do meio.
     private static let absoluteMaxCharacters = 8_000
+
+    /// O mesmo limite para o Private Cloud Compute, cuja janela é quatro vezes
+    /// maior. Sem um teto próprio, o texto continuaria sendo fatiado no tamanho
+    /// do modelo local — e cada pedaço sairia do aparelho assim mesmo.
+    private static let absoluteMaxCharactersCloud = 40_000
 
     private static let minimumChunkCharacters = 900
 
@@ -383,10 +388,20 @@ final class TextProcessor: Sendable {
         let responseCap = max(256, headroom)
 
         if action.prefersDeterministicOutput {
+            // O rótulo do parâmetro mudou de `sampling` para `samplingMode` no
+            // SDK do macOS 27. O nome antigo segue existindo lá, mas depreciado,
+            // então cada SDK usa o seu.
+            #if compiler(>=6.4)
             return GenerationOptions(
                 samplingMode: .greedy,
                 maximumResponseTokens: responseCap
             )
+            #else
+            return GenerationOptions(
+                sampling: .greedy,
+                maximumResponseTokens: responseCap
+            )
+            #endif
         }
         return GenerationOptions(
             temperature: action.temperature,
@@ -419,7 +434,8 @@ final class TextProcessor: Sendable {
         let localBudget = characters(
             context: localContext,
             instructionTokens: instructionTokens,
-            action: action
+            action: action,
+            outputCeiling: outputCeilingCharacters
         )
 
         let local = Plan(
@@ -440,7 +456,10 @@ final class TextProcessor: Sendable {
                     maxCharactersPerChunk: characters(
                         context: cloudContext,
                         instructionTokens: instructionTokens,
-                        action: action
+                        action: action,
+                        // O modelo da nuvem é maior e não tem o mesmo teto de
+                        // saída; aqui quem limita é a janela de contexto.
+                        outputCeiling: .max
                     ),
                     contextSize: cloudContext,
                     instructionTokens: instructionTokens,
@@ -456,14 +475,17 @@ final class TextProcessor: Sendable {
     private static func characters(
         context: Int,
         instructionTokens: Int,
-        action: CorrectionAction
+        action: CorrectionAction,
+        outputCeiling: Int
     ) -> Int {
-        // Dois tetos independentes. O primeiro é a fidelidade da saída, que foi
-        // medida: como o modelo não escreve mais que ~2.400 caracteres por
-        // resposta, a entrada que cabe depende de quanto a ação alonga o texto.
-        // Corrigir quase não alonga, então aceita bloco maior; formalizar
-        // alonga bastante, então aceita menos.
-        let byOutput = Int(Double(outputCeilingCharacters) / action.expectedOutputRatio)
+        // Dois tetos independentes. O primeiro é a fidelidade da saída: o modelo
+        // local não escreve mais que ~2.400 caracteres por resposta, e a entrada
+        // que cabe depende de quanto a ação alonga o texto. Corrigir quase não
+        // alonga, então aceita bloco maior; formalizar alonga bastante, então
+        // aceita menos. O teto é parâmetro porque ele foi medido no modelo
+        // local: aplicá-lo ao Private Cloud Compute anularia justamente o motivo
+        // de recorrer a ele, que é processar textos longos sem fatiar.
+        let byOutput = Int(Double(outputCeiling) / action.expectedOutputRatio)
 
         // O segundo é a janela de contexto, que é aritmética: entrada, saída e
         // instruções precisam caber juntas.
@@ -472,7 +494,8 @@ final class TextProcessor: Sendable {
             ? Int((Double(usable) / (1 + action.expectedOutputRatio)) * charactersPerToken)
             : fallbackMaxCharsPerChunk
 
-        let budget = min(byOutput, byContext, absoluteMaxCharacters)
+        let ceiling = outputCeiling == .max ? absoluteMaxCharactersCloud : absoluteMaxCharacters
+        let budget = min(byOutput, byContext, ceiling)
         return max(minimumChunkCharacters, budget)
     }
 

@@ -75,20 +75,34 @@ final class HistoryStore {
                 try FileManager.default.removeItem(at: fileURL)
             }
         } catch {
-            logger.error("Não foi possível apagar o histórico: \(error.localizedDescription, privacy: .public)")
+            logger.error("Não foi possível apagar o arquivo de histórico: \(error.localizedDescription, privacy: .public)")
+            // Se o arquivo não pôde ser removido, grava uma lista vazia por
+            // cima. Sem isto o conteúdo antigo reapareceria na próxima abertura,
+            // depois de a pessoa ter pedido para apagá-lo.
+            if !save() {
+                logger.error("O histórico pode reaparecer na próxima abertura.")
+            }
         }
     }
 
     /// Tira do plist o histórico gravado por versões anteriores e o regrava no
     /// arquivo protegido, para que o material sigiloso não continue em claro.
     private func migrateFromPreferencesIfNeeded() {
-        guard let data = AppPreferences.takeLegacyHistoryData() else { return }
+        guard let data = AppPreferences.legacyHistoryData() else { return }
         guard let decoded = try? JSONDecoder().decode([HistoryItem].self, from: data) else {
-            logger.error("Histórico antigo ilegível; descartado do plist.")
+            logger.error("Histórico antigo ilegível; nada a transferir.")
+            AppPreferences.removeLegacyHistoryData()
             return
         }
+
         items = Array(decoded.prefix(maxItems))
-        save()
+        guard save() else {
+            // A gravação falhou: o plist continua sendo a única cópia, e apagá-lo
+            // agora perderia o histórico de vez. Fica para a próxima abertura.
+            logger.error("Transferência do histórico adiada: a gravação falhou.")
+            return
+        }
+        AppPreferences.removeLegacyHistoryData()
         logger.info("Histórico movido do plist para arquivo protegido.")
     }
 
@@ -103,8 +117,9 @@ final class HistoryStore {
         }
     }
 
-    private func save() {
-        guard let directoryURL, let fileURL else { return }
+    @discardableResult
+    private func save() -> Bool {
+        guard let directoryURL, let fileURL else { return false }
         do {
             try FileManager.default.createDirectory(
                 at: directoryURL,
@@ -117,8 +132,10 @@ final class HistoryStore {
                 [.posixPermissions: 0o600],
                 ofItemAtPath: fileURL.path
             )
+            return true
         } catch {
             logger.error("Não foi possível salvar o histórico: \(error.localizedDescription, privacy: .public)")
+            return false
         }
     }
 }

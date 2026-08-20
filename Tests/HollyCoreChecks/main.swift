@@ -145,6 +145,38 @@ enum HollyCoreChecks {
             ) == "Segue o texto para conferência:\nvalor de R$ 10,00.",
             "Uma abertura legítima do usuário foi removida."
         )
+
+        // A correção pode transformar a linha do usuário em algo que casa com a
+        // lista de apresentações, sem que a linha original casasse. Comparar por
+        // prefixo exato apagaria o conteúdo dela.
+        try require(
+            ResponseSanitizer.clean(
+                "Segue o texto para conferência:\nvalor de R$ 10,00.",
+                original: "Segwe o texto para conferencia:\nvalor de R$ 10,00."
+            ) == "Segue o texto para conferência:\nvalor de R$ 10,00.",
+            "Uma linha do usuário corrigida foi confundida com apresentação do modelo."
+        )
+        try require(
+            ResponseSanitizer.clean(
+                "Aqui está o texto corrigido:\nO réu não compareceu à audiência.",
+                original: "O reu nao compareceu a audiencia."
+            ) == "O réu não compareceu à audiência.",
+            "Uma apresentação de fato acrescentada pelo modelo não foi removida."
+        )
+        try require(
+            ResponseSanitizer.isLikelyRevision(
+                of: "Segwe o texto para conferencia:",
+                into: "Segue o texto para conferência:"
+            ),
+            "Uma diferença de uma letra e acentos não foi reconhecida como revisão."
+        )
+        try require(
+            !ResponseSanitizer.isLikelyRevision(
+                of: "O reu nao compareceu a audiencia.",
+                into: "Aqui está o texto corrigido:"
+            ),
+            "Duas linhas sem relação foram tomadas por revisão uma da outra."
+        )
     }
 
     /// A divisão deve preferir fim de parágrafo, depois quebra de linha,
