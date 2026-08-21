@@ -257,6 +257,36 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         handleServiceRequest(pboard: pboard, action: .markdown)
     }
 
+    @objc(friendlyService:userData:error:) dynamic
+    func friendlyService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        handleServiceRequest(pboard: pboard, action: .friendly)
+    }
+
+    @objc(professionalService:userData:error:) dynamic
+    func professionalService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        handleServiceRequest(pboard: pboard, action: .professional)
+    }
+
+    @objc(conciseService:userData:error:) dynamic
+    func conciseService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        handleServiceRequest(pboard: pboard, action: .concise)
+    }
+
+    @objc(keyPointsService:userData:error:) dynamic
+    func keyPointsService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        handleServiceRequest(pboard: pboard, action: .keyPoints)
+    }
+
+    @objc(listService:userData:error:) dynamic
+    func listService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        handleServiceRequest(pboard: pboard, action: .list)
+    }
+
+    @objc(tableService:userData:error:) dynamic
+    func tableService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        handleServiceRequest(pboard: pboard, action: .table)
+    }
+
     private func handleServiceRequest(pboard: NSPasteboard, action: CorrectionAction) {
         logger.info("Serviço recebido: \(action.title, privacy: .public)")
         guard !isProcessing else {
@@ -294,6 +324,22 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         clipboardSnapshot: ClipboardSnapshot,
         customInstruction: String? = nil
     ) {
+        // "Redigir…" pede a instrução na hora. Sem isto ela só poderia ser
+        // trocada abrindo as Preferências, o que não combina com uma ação
+        // acionada em cima do texto.
+        var instruction = customInstruction
+        if action == .custom, instruction == nil {
+            guard let escrita = promptForInstruction() else {
+                isProcessing = false
+                updateStatusIcon(processing: false)
+                clipboardSnapshot.restoreIfUnchanged(
+                    since: selection.clipboardChangeCount
+                )
+                return
+            }
+            instruction = escrita
+        }
+
         if action == .markdown {
             saveAsMarkdownFile(
                 selection.text,
@@ -306,9 +352,31 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                 action: action,
                 targetApp: targetApp,
                 clipboardSnapshot: clipboardSnapshot,
-                customInstruction: customInstruction
+                customInstruction: instruction
             )
         }
+    }
+
+    /// Caixa curta para a instrução do "Redigir…". Devolve `nil` se a pessoa
+    /// cancelar ou deixar em branco.
+    private func promptForInstruction() -> String? {
+        let alert = NSAlert()
+        alert.messageText = "O que fazer com o texto?"
+        alert.informativeText = "Ex.: “Traduza para o inglês”, “Deixe em tópicos”, “Responda a esta mensagem”."
+        alert.addButton(withTitle: "Aplicar")
+        alert.addButton(withTitle: "Cancelar")
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        field.placeholderString = "Descreva sua alteração"
+        field.stringValue = AppPreferences.customPrompt ?? ""
+        alert.accessoryView = field
+
+        NSApp.activate(ignoringOtherApps: true)
+        alert.window.initialFirstResponder = field
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let texto = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return texto.isEmpty ? nil : texto
     }
 
     @objc private func showSettings() {

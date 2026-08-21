@@ -74,6 +74,22 @@ As alterações relevantes do HollyCorretor são registradas neste arquivo.
 - Substitui o `codesign --deep`, obsoleto, pela assinatura dos pacotes internos
   antes do aplicativo.
 
+## 0.3.0 — 2026-08-20
+
+- Agrupa as ações num submenu **HollyCorretor** dentro do menu de Serviços,
+  acessível pelo clique direito sobre o texto selecionado.
+- Acrescenta as ações Amigável, Profissional, Conciso, Pontos Principais, Lista
+  e Tabela.
+- Corrige perda silenciosa de conteúdo em textos acima de ~2.500 caracteres.
+- Corrige o vazamento do delimitador `===TEXTO===` para dentro do resultado.
+- Restaura o tratamento de erro, que havia parado de funcionar no macOS 27.
+- Deixa de bloquear texto jurídico legítimo, com guardrails de transformação.
+- Mostra o texto enquanto é gerado e permite cancelar.
+- Escreve o resultado direto no campo pela Acessibilidade quando possível.
+- Passa a aceitar identidade de assinatura estável, para a autorização de
+  Acessibilidade sobreviver às recompilações.
+- Histórico desligado por padrão e gravado em arquivo protegido.
+
 ## 0.2.0 — 2026-08-08
 
 - Renomeia o aplicativo de ZapCorrector para HollyCorretor.

@@ -49,6 +49,21 @@ globais, a leitura da seleção e o modelo de IA usam APIs exclusivas do macOS. 
 lógica independente dessas APIs está no módulo `HollyCore`, que compila
 separadamente e serve de base para futuros clientes de outras plataformas.
 
+## Como acionar
+
+A forma principal é o **menu de clique direito**: selecione o texto, clique com o
+botão direito e abra **Serviços › HollyCorretor**. As ações aparecem agrupadas
+num submenu próprio.
+
+O menu de Serviços depende de o aplicativo de origem oferecê-lo, o que vale para
+os aplicativos nativos do macOS — Mail, Notas, Pages, Word — mas não para todos
+os feitos em Electron.
+
+Para alcançar também esses, existe a opção **Botão ao selecionar texto**, que faz
+uma pastilha do HollyCorretor aparecer ao lado de qualquer seleção, em qualquer
+aplicativo. Ela nasce desligada, porque exige monitorar o mouse em todo o
+sistema; ligue-a no menu da barra ou em Preferências se precisar.
+
 ## Ações e atalhos iniciais
 
 Todos os atalhos usam `Control + Option + Command` mais a tecla indicada e podem
@@ -98,8 +113,9 @@ No primeiro uso:
 1. Autorize o HollyCorretor em **Ajustes do Sistema › Privacidade e Segurança ›
    Acessibilidade**.
 2. Selecione o texto em um aplicativo compatível.
-3. Use um atalho, uma ação no ícone da barra de menus ou um item de
-   **Serviços › HollyCorretor**.
+3. Clique com o botão direito sobre a seleção e escolha o item desejado em
+   **Serviços › HollyCorretor**. Também dá para usar um atalho de teclado ou o
+   ícone da barra de menus.
 4. Revise o resultado na prévia.
 5. Escolha **Substituir**, **Copiar** ou **Cancelar**.
 

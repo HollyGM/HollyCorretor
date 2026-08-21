@@ -27,9 +27,11 @@ enum AppPreferences {
             // guardar isso por padrão inverte a expectativa de quem o usa.
             saveHistoryKey: false,
             privateCloudComputeKey: false,
-            // O botão flutuante é o principal motivo de o app existir fora do
-            // menu de Serviços; nasce ligado.
-            selectionPillKey: true
+            // Nasce desligado: a ativação padrão é o submenu HollyCorretor no
+            // menu de clique direito. A pastilha continua disponível para quem
+            // preferir, mas exige monitorar o mouse no sistema inteiro, o que é
+            // bem mais intrusivo do que responder a um item de menu.
+            selectionPillKey: false
         ])
         migrateLegacyPreferencesIfNeeded()
     }
