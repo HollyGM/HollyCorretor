@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 struct HistoryItem: Codable, Identifiable {
     let id: UUID
@@ -8,19 +9,47 @@ struct HistoryItem: Codable, Identifiable {
     let date: Date
 }
 
+/// Guarda os últimos resultados em arquivo próprio, fora do plist de
+/// preferências. O conteúdo é material de cliente: o arquivo fica com
+/// permissão 0600 e, quando o volume oferece, com proteção de dados completa.
 @MainActor
 final class HistoryStore {
     static let shared = HistoryStore()
-    
+
     private let maxItems = 10
-    
+    private let logger = Logger(
+        subsystem: "com.hollycorretor.app",
+        category: "HistoryStore"
+    )
+
     private(set) var items: [HistoryItem] = []
-    
+
+    private lazy var directoryURL: URL? = {
+        guard let base = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else { return nil }
+        return base.appendingPathComponent("HollyCorretor", isDirectory: true)
+    }()
+
+    private var fileURL: URL? {
+        directoryURL?.appendingPathComponent("historico.json", isDirectory: false)
+    }
+
+    /// Chamado na abertura do aplicativo. A transferência do histórico do plist
+    /// para o arquivo protegido é uma correção de privacidade: precisa
+    /// acontecer mesmo que a pessoa nunca abra a janela de histórico, e o
+    /// singleton só nasce quando alguém o usa.
+    static func prepare() {
+        _ = shared
+    }
+
     private init() {
         AppPreferences.prepare()
+        migrateFromPreferencesIfNeeded()
         load()
     }
-    
+
     func add(actionTitle: String, processedText: String) {
         let item = HistoryItem(
             id: UUID(),
@@ -29,37 +58,84 @@ final class HistoryStore {
             processedText: processedText,
             date: Date()
         )
-        
+
         items.insert(item, at: 0)
         if items.count > maxItems {
             items.removeLast(items.count - maxItems)
         }
-        
+
         save()
     }
-    
+
     func clear() {
         items.removeAll()
-        save()
+        guard let fileURL else { return }
+        do {
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                try FileManager.default.removeItem(at: fileURL)
+            }
+        } catch {
+            logger.error("Não foi possível apagar o arquivo de histórico: \(error.localizedDescription, privacy: .public)")
+            // Se o arquivo não pôde ser removido, grava uma lista vazia por
+            // cima. Sem isto o conteúdo antigo reapareceria na próxima abertura,
+            // depois de a pessoa ter pedido para apagá-lo.
+            if !save() {
+                logger.error("O histórico pode reaparecer na próxima abertura.")
+            }
+        }
     }
-    
-    private func load() {
-        guard let data = UserDefaults.standard.data(forKey: AppPreferences.historyKey) else {
+
+    /// Tira do plist o histórico gravado por versões anteriores e o regrava no
+    /// arquivo protegido, para que o material sigiloso não continue em claro.
+    private func migrateFromPreferencesIfNeeded() {
+        guard let data = AppPreferences.legacyHistoryData() else { return }
+        guard let decoded = try? JSONDecoder().decode([HistoryItem].self, from: data) else {
+            logger.error("Histórico antigo ilegível; nada a transferir.")
+            AppPreferences.removeLegacyHistoryData()
             return
         }
+
+        items = Array(decoded.prefix(maxItems))
+        guard save() else {
+            // A gravação falhou: o plist continua sendo a única cópia, e apagá-lo
+            // agora perderia o histórico de vez. Fica para a próxima abertura.
+            logger.error("Transferência do histórico adiada: a gravação falhou.")
+            return
+        }
+        AppPreferences.removeLegacyHistoryData()
+        logger.info("Histórico movido do plist para arquivo protegido.")
+    }
+
+    private func load() {
+        guard let fileURL,
+              FileManager.default.fileExists(atPath: fileURL.path) else { return }
         do {
+            let data = try Data(contentsOf: fileURL)
             items = try JSONDecoder().decode([HistoryItem].self, from: data)
         } catch {
-            NSLog("HollyCorretor: histórico inválido: %@", error.localizedDescription)
+            logger.error("Histórico inválido: \(error.localizedDescription, privacy: .public)")
         }
     }
-    
-    private func save() {
+
+    @discardableResult
+    private func save() -> Bool {
+        guard let directoryURL, let fileURL else { return false }
         do {
+            try FileManager.default.createDirectory(
+                at: directoryURL,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
             let data = try JSONEncoder().encode(items)
-            UserDefaults.standard.set(data, forKey: AppPreferences.historyKey)
+            try data.write(to: fileURL, options: [.atomic, .completeFileProtection])
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: fileURL.path
+            )
+            return true
         } catch {
-            NSLog("HollyCorretor: não foi possível salvar o histórico: %@", error.localizedDescription)
+            logger.error("Não foi possível salvar o histórico: \(error.localizedDescription, privacy: .public)")
+            return false
         }
     }
 }

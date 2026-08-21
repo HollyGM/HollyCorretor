@@ -33,7 +33,7 @@ a uma API de terceiros.
   Todo resultado é revisado antes de substituir o texto original.</em>
 </p>
 
-Versão atual: **0.2.0** — consulte o [histórico de versões](CHANGELOG.md).
+Versão atual: **0.3.0** — consulte o [histórico de versões](CHANGELOG.md).
 
 ## Compatibilidade
 
@@ -48,6 +48,21 @@ O aplicativo ainda não funciona no Windows ou Linux. A interface, os atalhos
 globais, a leitura da seleção e o modelo de IA usam APIs exclusivas do macOS. A
 lógica independente dessas APIs está no módulo `HollyCore`, que compila
 separadamente e serve de base para futuros clientes de outras plataformas.
+
+## Como acionar
+
+A forma principal é o **menu de clique direito**: selecione o texto, clique com o
+botão direito e abra **Serviços › HollyCorretor**. As ações aparecem agrupadas
+num submenu próprio.
+
+O menu de Serviços depende de o aplicativo de origem oferecê-lo, o que vale para
+os aplicativos nativos do macOS — Mail, Notas, Pages, Word — mas não para todos
+os feitos em Electron.
+
+Para alcançar também esses, existe a opção **Botão ao selecionar texto**, que faz
+uma pastilha do HollyCorretor aparecer ao lado de qualquer seleção, em qualquer
+aplicativo. Ela nasce desligada, porque exige monitorar o mouse em todo o
+sistema; ligue-a no menu da barra ou em Preferências se precisar.
 
 ## Ações e atalhos iniciais
 
@@ -98,8 +113,9 @@ No primeiro uso:
 1. Autorize o HollyCorretor em **Ajustes do Sistema › Privacidade e Segurança ›
    Acessibilidade**.
 2. Selecione o texto em um aplicativo compatível.
-3. Use um atalho, uma ação no ícone da barra de menus ou um item de
-   **Serviços › HollyCorretor**.
+3. Clique com o botão direito sobre a seleção e escolha o item desejado em
+   **Serviços › HollyCorretor**. Também dá para usar um atalho de teclado ou o
+   ícone da barra de menus.
 4. Revise o resultado na prévia.
 5. Escolha **Substituir**, **Copiar** ou **Cancelar**.
 
@@ -110,13 +126,31 @@ O HollyCorretor nunca envia a mensagem automaticamente.
 - O modelo padrão roda no dispositivo por meio da Apple Intelligence.
 - O aplicativo não contém chaves de API nem implementa chamadas de rede em tempo
   de execução.
-- Os 10 resultados mais recentes são salvos localmente por padrão. Essa opção pode
-  ser desativada em Preferências, e o histórico pode ser apagado pelo menu.
-- O histórico local não é criptografado pelo próprio aplicativo. Para textos
-  sigilosos, desative-o.
-- O conteúdo anterior da área de transferência só é restaurado se ela não tiver
-  sido alterada novamente; assim, uma cópia feita durante o processamento não é
-  sobrescrita.
+- O histórico **nasce desligado**. Quando ativado em Preferências, guarda os 10
+  resultados mais recentes em `~/Library/Application Support/HollyCorretor/`,
+  em arquivo com permissão restrita e proteção de dados — não mais em texto
+  claro dentro do plist de preferências. Pode ser apagado pelo menu.
+- O envio ao Private Cloud Compute também nasce desligado. Com a opção ativada,
+  apenas textos que não cabem no modelo local saem do aparelho, rumo aos
+  servidores da Apple. Para material sob sigilo, mantenha-a desligada.
+- Quando o aplicativo de origem expõe o campo pela API de Acessibilidade, o
+  resultado é escrito direto nele e a área de transferência não é tocada.
+- No caminho alternativo, que usa a área de transferência, o conteúdo anterior
+  só é restaurado se ela não tiver sido alterada novamente; assim, uma cópia
+  feita durante o processamento não é sobrescrita.
+
+## Limites do modelo local
+
+Numa tarefa de transformação, o modelo on-device devolve no máximo cerca de
+2.400 caracteres por resposta. Textos maiores são divididos automaticamente em
+blocos — preferindo fim de parágrafo, quebra de linha e fim de frase, nessa
+ordem — e recompostos ao final. O aplicativo ainda confere o tamanho de cada
+resposta e refaz o bloco dividido se o modelo tiver condensado o texto em vez de
+transformá-lo.
+
+Esse teto vem da fidelidade da saída, não da janela de contexto, que é bem maior
+(8.192 tokens). Para resumos, em que encurtar é o resultado desejado, os blocos
+podem ser bem maiores.
 
 Para relatar uma vulnerabilidade sem expor detalhes publicamente, consulte a
 [política de segurança](SECURITY.md).
@@ -152,12 +186,68 @@ O projeto utiliza `KeyboardShortcuts` 1.15.0, de Sindre Sorhus, distribuído sob
 Licença MIT. As atribuições e o texto aplicável estão em
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
+## Assinatura e a permissão de Acessibilidade
+
+O macOS identifica um aplicativo autorizado pela assinatura do binário. Com
+assinatura ad hoc, essa identidade muda a cada compilação, e o sistema passa a
+tratar o app como se fosse outro — exigindo autorizar de novo em **Ajustes do
+Sistema › Privacidade e Segurança › Acessibilidade** toda vez que você compila.
+
+Para ter identidade estável, crie um certificado de assinatura de código. O
+aplicativo **Acesso às Chaves** não existe mais no macOS 27, então o caminho é o
+Terminal:
+
+```bash
+# 1. Gerar o certificado, já com a finalidade de assinatura de código
+cat > /tmp/holly.cnf <<'CNF'
+[ req ]
+distinguished_name = dn
+x509_extensions    = ext
+prompt             = no
+[ dn ]
+CN = HollyCorretor
+[ ext ]
+basicConstraints       = critical,CA:false
+keyUsage               = critical,digitalSignature
+extendedKeyUsage       = critical,codeSigning
+subjectKeyIdentifier   = hash
+CNF
+openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+  -keyout /tmp/holly.key -out /tmp/holly.crt -config /tmp/holly.cnf
+
+# O -legacy e a senha são necessários: o macOS não lê o formato novo do
+# OpenSSL 3, e senha vazia faz a verificação do MAC falhar na importação.
+openssl pkcs12 -export -legacy -out /tmp/HollyCorretor.p12 \
+  -inkey /tmp/holly.key -in /tmp/holly.crt -name "HollyCorretor" -passout pass:holly
+
+# 2. Importar e marcar como confiável
+security import /tmp/HollyCorretor.p12 -k ~/Library/Keychains/login.keychain-db \
+  -P holly -T /usr/bin/codesign
+security add-trusted-cert -r trustRoot -p codeSign \
+  -k ~/Library/Keychains/login.keychain-db /tmp/holly.crt
+
+# 3. Conferir
+security find-identity -v -p codesigning
+```
+
+Com o certificado no lugar, informe o nome dele ao compilar:
+
+```bash
+HOLLY_SIGN_IDENTITY="Nome do certificado" ./scripts/run.sh
+```
+
+Sem a variável, o script continua usando assinatura ad hoc e avisa a respeito.
+
+A diferença aparece no requisito designado, que é o que o macOS guarda ao
+autorizar o aplicativo. Com assinatura ad hoc ele fixa o `cdhash` do binário, que
+muda a cada compilação; com o certificado, fixa o identificador e o certificado,
+que não mudam — e a autorização de Acessibilidade sobrevive às recompilações.
+
 ## Distribuição
 
-O pacote gerado localmente recebe apenas uma assinatura ad hoc. Para distribuir um
-binário pronto a outras pessoas sem alertas do Gatekeeper, ainda será necessário
-usar uma conta Apple Developer, assinatura Developer ID e notarização. O código
-fonte pode ser compilado localmente sem essas credenciais.
+Para distribuir um binário pronto a outras pessoas sem alertas do Gatekeeper,
+ainda será necessário usar uma conta Apple Developer, assinatura Developer ID e
+notarização. O código fonte pode ser compilado localmente sem essas credenciais.
 
 ## Licença
 

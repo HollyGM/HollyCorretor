@@ -10,16 +10,61 @@ permissions:
 
 jobs:
   build-and-test:
-    runs-on: macos-26
+    # O app declara alvo macOS 26, mas roda em máquinas com macOS 27. Testar só
+    # na versão do alvo deixou passar a troca de `GenerationError` por
+    # `LanguageModelError`, que desativou o tratamento de erro inteiro.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-26, macos-latest]
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Obter código
         uses: actions/checkout@v6
 
-      - name: Exibir versão do Swift
-        run: swift --version
+      - name: Exibir versões
+        run: |
+          sw_vers
+          swift --version
 
       - name: Executar testes
         run: ./scripts/test.sh
 
       - name: Gerar aplicativo
         run: ./scripts/build.sh
+
+  auditoria-de-depreciacoes:
+    # Compila com a plataforma elevada para que o compilador reporte APIs
+    # depreciadas em versões acima do alvo declarado. Sem isto, uma API que
+    # muda no macOS 27 permanece silenciosa até quebrar em produção.
+    runs-on: macos-latest
+    steps:
+      - name: Obter código
+        uses: actions/checkout@v6
+
+      - name: Compilar com plataforma elevada
+        run: |
+          set -uo pipefail
+          cp Package.swift Package.swift.original
+          # Eleva o alvo só para esta compilação; o pacote não é alterado no repositório.
+          sed -i '' 's/\.macOS("26\.0")/.macOS("27.0")/' Package.swift
+          swift build --product HollyCorretor 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          cp Package.swift.original Package.swift
+
+          # A distinção importa: "não encontrei nada" e "não consegui procurar"
+          # são resultados diferentes, e tratá-los igual transforma esta etapa
+          # num carimbo verde que não verifica nada.
+          if grep -q "was deprecated in macOS" build.log; then
+            echo "::warning::Há APIs depreciadas em uso. Confira se ainda existe um caminho equivalente para a versão nova."
+            grep "was deprecated in macOS" build.log | sort -u
+          elif [ "$status" -ne 0 ]; then
+            echo "::warning::A auditoria não pôde ser feita: a compilação falhou. O runner provavelmente ainda não tem o SDK necessário."
+            echo "----- fim do registro de compilação -----"
+            tail -40 build.log
+          else
+            # Diz contra qual SDK a conferência foi feita: enquanto os runners
+            # não tiverem o SDK do macOS 27, as APIs que ele depreciou ainda não
+            # estão marcadas, e o resultado limpo diz menos do que parece.
+            echo "Nenhuma API depreciada em uso (conferido com o SDK $(xcrun --show-sdk-version --sdk macosx))."
+          fi

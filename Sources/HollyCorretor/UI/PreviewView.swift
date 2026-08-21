@@ -1,11 +1,10 @@
 import AppKit
 
 /// Painel de prévia em AppKit puro (sem SwiftUI). O texto gerado pela Apple
-/// Intelligence é mostrado num editor; o usuário revisa e confirma. Evitar o
-/// SwiftUI permite compilar apenas com o Command Line Tools, sem exigir o
-/// Xcode completo (que traz o plugin de macros SwiftUIMacros).
+/// Intelligence aparece enquanto é produzido; o usuário revisa e confirma.
+/// Evitar o SwiftUI permite compilar apenas com o Command Line Tools, sem
+/// exigir o Xcode completo (que traz o plugin de macros SwiftUIMacros).
 final class PreviewViewController: NSViewController {
-    private let initialText: String
     private let originalText: String?
     private let headerTitle: String
     private let onConfirm: (String) -> Void
@@ -13,16 +12,21 @@ final class PreviewViewController: NSViewController {
     private let onCopy: ((String) -> Void)?
 
     private var textView: NSTextView!
+    private var noteLabel: NSTextField!
+    private var spinner: NSProgressIndicator!
+    private var cancelButton: NSButton!
+    private var copyButton: NSButton?
+    private var confirmButton: NSButton!
+
+    private var isGenerating = true
 
     init(
-        text: String,
         originalText: String?,
         title: String,
         onConfirm: @escaping (String) -> Void,
         onCancel: @escaping () -> Void,
         onCopy: ((String) -> Void)? = nil
     ) {
-        self.initialText = text
         self.originalText = originalText
         self.headerTitle = title
         self.onConfirm = onConfirm
@@ -37,10 +41,17 @@ final class PreviewViewController: NSViewController {
     override func loadView() {
         let container = NSView()
 
-        // MARK: Header
+        // MARK: Cabeçalho
         let titleLabel = NSTextField(labelWithString: headerTitle)
         titleLabel.font = .preferredFont(forTextStyle: .headline)
         titleLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+
+        spinner = NSProgressIndicator()
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isDisplayedWhenStopped = false
+        spinner.startAnimation(nil)
+        spinner.setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
         let closeButton = NSButton(
             image: NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Fechar")
@@ -57,7 +68,7 @@ final class PreviewViewController: NSViewController {
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let headerStack = NSStackView(views: [titleLabel, spacer, closeButton])
+        let headerStack = NSStackView(views: [titleLabel, spinner, spacer, closeButton])
         headerStack.orientation = .horizontal
         headerStack.alignment = .centerY
         headerStack.spacing = 8
@@ -69,36 +80,40 @@ final class PreviewViewController: NSViewController {
         guard let tv = scrollView.documentView as? NSTextView else {
             preconditionFailure("A visualização de texto não foi criada pelo AppKit")
         }
-        tv.isEditable = true
         tv.isRichText = false
         tv.font = .systemFont(ofSize: 14)
-        tv.string = initialText
         tv.textContainerInset = NSSize(width: 6, height: 8)
         tv.isAutomaticQuoteSubstitutionEnabled = false
         tv.isAutomaticDashSubstitutionEnabled = false
+        // Só liberado depois que a geração termina: editar enquanto o texto
+        // ainda está chegando faria a próxima atualização apagar a edição.
+        tv.isEditable = false
         self.textView = tv
 
-        // MARK: Footer
-        let note = NSTextField(labelWithString: "Revise o texto gerado pela Apple Intelligence antes de aplicar.")
-        note.font = .preferredFont(forTextStyle: .caption1)
-        note.textColor = .secondaryLabelColor
-        note.lineBreakMode = .byWordWrapping
-        note.maximumNumberOfLines = 2
-        note.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        // MARK: Rodapé
+        noteLabel = NSTextField(labelWithString: "Gerando com a Apple Intelligence…")
+        noteLabel.font = .preferredFont(forTextStyle: .caption1)
+        noteLabel.textColor = .secondaryLabelColor
+        noteLabel.lineBreakMode = .byWordWrapping
+        noteLabel.maximumNumberOfLines = 2
+        noteLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let cancelButton = NSButton(title: "Cancelar", target: self, action: #selector(cancelAction))
+        cancelButton = NSButton(title: "Cancelar", target: self, action: #selector(cancelAction))
         cancelButton.keyEquivalent = "\u{1b}" // Esc
 
-        var footerViews: [NSView] = [note, cancelButton]
+        var footerViews: [NSView] = [noteLabel, cancelButton]
 
         if onCopy != nil {
-            let copyButton = NSButton(title: "Copiar", target: self, action: #selector(copyAction))
-            copyButton.toolTip = "Copia o resultado para a área de transferência sem substituir o texto original."
-            footerViews.append(copyButton)
+            let button = NSButton(title: "Copiar", target: self, action: #selector(copyAction))
+            button.toolTip = "Copia o resultado para a área de transferência sem substituir o texto original."
+            button.isEnabled = false
+            footerViews.append(button)
+            copyButton = button
         }
 
-        let confirmButton = NSButton(title: "Substituir", target: self, action: #selector(confirmAction))
+        confirmButton = NSButton(title: "Substituir", target: self, action: #selector(confirmAction))
         confirmButton.keyEquivalent = "\r" // Enter → botão padrão (destacado)
+        confirmButton.isEnabled = false
         footerViews.append(confirmButton)
 
         let footerStack = NSStackView(views: footerViews)
@@ -164,12 +179,39 @@ final class PreviewViewController: NSViewController {
         self.view = container
     }
 
-    override func viewDidAppear() {
-        super.viewDidAppear()
-        view.window?.makeFirstResponder(textView)
+    // MARK: - Streaming
+
+    /// Substitui o conteúdo pelo texto acumulado até agora e acompanha o fim
+    /// do texto, para a pessoa ver o que está sendo escrito.
+    func updateStreamingText(_ text: String) {
+        guard isGenerating, isViewLoaded, textView.string != text else { return }
+        textView.string = text
+        textView.scrollToEndOfDocument(nil)
     }
 
-    @objc private func confirmAction() { onConfirm(textView.string) }
+    func finishStreaming(with text: String) {
+        guard isViewLoaded else { return }
+        isGenerating = false
+        textView.string = text
+        textView.isEditable = true
+        spinner.stopAnimation(nil)
+        noteLabel.stringValue = "Revise o texto gerado pela Apple Intelligence antes de aplicar."
+        copyButton?.isEnabled = true
+        confirmButton.isEnabled = true
+        view.window?.makeFirstResponder(textView)
+        textView.setSelectedRange(NSRange(location: 0, length: 0))
+        textView.scrollToBeginningOfDocument(nil)
+    }
+
+    @objc private func confirmAction() {
+        guard !isGenerating else { return }
+        onConfirm(textView.string)
+    }
+
     @objc private func cancelAction() { onCancel() }
-    @objc private func copyAction() { onCopy?(textView.string) }
+
+    @objc private func copyAction() {
+        guard !isGenerating else { return }
+        onCopy?(textView.string)
+    }
 }
