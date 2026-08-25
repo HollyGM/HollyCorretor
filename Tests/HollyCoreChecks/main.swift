@@ -109,6 +109,34 @@ enum HollyCoreChecks {
             ) == "===termo jurídico===",
             "Sinais de igual legítimos do texto original foram removidos."
         )
+        try require(
+            ResponseSanitizer.clean(
+                "Av. Prudente de Morais, 6842 – Natal – RN. ===FIM",
+                original: "Av. Prudente de Morais, 6842 - Natal - RN."
+            ) == "Av. Prudente de Morais, 6842 – Natal – RN.",
+            "O marcador de fechamento truncado da resposta não foi removido."
+        )
+        try require(
+            ResponseSanitizer.clean(
+                "===TEXTO==\nTexto corrigido\n===FIM=",
+                original: "Testo corrigido"
+            ) == "Texto corrigido",
+            "Variantes truncadas dos dois delimitadores não foram removidas."
+        )
+        try require(
+            ResponseSanitizer.clean(
+                "A expressão termina em ===FIM",
+                original: "A expressão termina em ===FIM"
+            ) == "A expressão termina em ===FIM",
+            "Um marcador truncado legítimo do texto original foi removido."
+        )
+        try require(
+            ResponseSanitizer.clean(
+                "A expressão termina em ===FIM===",
+                original: "A expressão termina em ===FIM==="
+            ) == "A expressão termina em ===FIM===",
+            "Um marcador completo legítimo do texto original foi removido."
+        )
     }
 
     /// O modelo com frequência devolve só o delimitador de abertura, sem

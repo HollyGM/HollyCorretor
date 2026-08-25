@@ -33,7 +33,7 @@ a uma API de terceiros.
   Todo resultado é revisado antes de substituir o texto original.</em>
 </p>
 
-Versão atual: **0.3.3** — consulte o [histórico de versões](CHANGELOG.md).
+Versão atual: **0.3.4** — consulte o [histórico de versões](CHANGELOG.md).
 
 ## Compatibilidade
 

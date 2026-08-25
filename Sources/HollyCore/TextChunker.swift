@@ -190,6 +190,13 @@ public enum ResponseSanitizer {
     public static let openingDelimiter = "===TEXTO==="
     public static let closingDelimiter = "===FIM==="
 
+    private static let openingDelimiterVariants = [
+        "===TEXTO===", "===TEXTO==", "===TEXTO=", "===TEXTO"
+    ]
+    private static let closingDelimiterVariants = [
+        "===FIM===", "===FIM==", "===FIM=", "===FIM"
+    ]
+
     /// Frases com que o modelo às vezes apresenta o resultado em vez de
     /// devolver só o texto pedido.
     private static let preambles = [
@@ -213,15 +220,7 @@ public enum ResponseSanitizer {
         var result = response.trimmingCharacters(in: .whitespacesAndNewlines)
         let originalTrimmed = original.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if !originalTrimmed.hasPrefix(openingDelimiter), result.hasPrefix(openingDelimiter) {
-            result.removeFirst(openingDelimiter.count)
-            result = result.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-
-        if !originalTrimmed.hasSuffix(closingDelimiter), result.hasSuffix(closingDelimiter) {
-            result.removeLast(closingDelimiter.count)
-            result = result.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
+        result = stripNamedDelimiterVariants(from: result, original: originalTrimmed)
 
         // O Foundation Models também pode devolver um envelope abreviado,
         // sem os nomes TEXTO/FIM: `===resultado===`. Tratar as duas bordas de
@@ -254,6 +253,38 @@ public enum ResponseSanitizer {
         }
 
         return removePreamble(from: result, original: originalTrimmed)
+    }
+
+    /// O modelo pode interromper a geração no meio do marcador e devolver
+    /// `===FIM`, `===FIM=` ou `===FIM==`. A variante mais longa é testada
+    /// primeiro para remover exatamente o artefato presente na borda.
+    private static func stripNamedDelimiterVariants(
+        from text: String,
+        original: String
+    ) -> String {
+        var result = text
+        let originalUpper = original.uppercased()
+
+        if !originalUpper.hasPrefix("===TEXTO") {
+            let resultUpper = result.uppercased()
+            if let marker = openingDelimiterVariants.first(where: resultUpper.hasPrefix) {
+                result.removeFirst(marker.count)
+                result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        let originalHasClosingMarker = closingDelimiterVariants.contains(
+            where: originalUpper.hasSuffix
+        )
+        if !originalHasClosingMarker {
+            let resultUpper = result.uppercased()
+            if let marker = closingDelimiterVariants.first(where: resultUpper.hasSuffix) {
+                result.removeLast(marker.count)
+                result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        return result
     }
 
     private static func stripUnlabelledEqualsEnvelope(

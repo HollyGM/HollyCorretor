@@ -2,6 +2,13 @@
 
 As alterações relevantes do HollyCorretor são registradas neste arquivo.
 
+## 0.3.4 — 2026-08-25
+
+- Remove marcadores de resposta interrompidos no meio, incluindo `===FIM`,
+  `===FIM=` e `===FIM==`, observados ao reescrever e simplificar no WhatsApp.
+- Reconhece também as variantes truncadas de `===TEXTO===` sem apagar uma
+  expressão semelhante que já faça parte do texto original.
+
 ## 0.3.3 — 2026-08-25
 
 - Remove também envelopes abreviados como `===texto revisado===`, sem apagar
