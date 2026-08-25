@@ -65,6 +65,24 @@ private struct LocatedServiceSelection {
 private final class PreviewPanel: NSPanel {
     var onClose: (() -> Void)?
 
+    func position(near anchor: NSRect, gap: CGFloat = 10) {
+        let screen = NSScreen.screens.first(where: { $0.frame.intersects(anchor) })
+            ?? NSScreen.main
+            ?? NSScreen.screens[0]
+        let visible = screen.visibleFrame
+        let size = frame.size
+
+        var x = anchor.minX
+        var y = anchor.minY - size.height - gap
+        if y < visible.minY {
+            y = anchor.maxY + gap
+        }
+
+        x = min(max(x, visible.minX + 8), visible.maxX - size.width - 8)
+        y = min(max(y, visible.minY + 8), visible.maxY - size.height - 8)
+        setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
     override func close() {
         let handler = onClose
         onClose = nil
@@ -766,8 +784,8 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
 
     private func makePreviewPanel() -> PreviewPanel {
         let panel = PreviewPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 320),
-            styleMask: [.titled, .resizable, .fullSizeContentView],
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 240),
+            styleMask: [.titled, .fullSizeContentView],
             backing: .buffered, defer: false
         )
         panel.isFloatingPanel = true
@@ -777,7 +795,6 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         panel.standardWindowButton(.closeButton)?.isHidden = true
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
-        panel.center()
         return panel
     }
 
@@ -1109,6 +1126,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             }
         )
         panel.contentViewController = previewController
+        panel.position(near: selection.anchor)
         panel.onClose = { [weak self] in
             self?.previewPanel = nil
             self?.isProcessing = false

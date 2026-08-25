@@ -95,6 +95,20 @@ enum HollyCoreChecks {
             ) == "Texto corrigido",
             "Delimitadores adicionados pelo modelo não foram removidos."
         )
+        try require(
+            ResponseSanitizer.clean(
+                "===Era só essa questão do certificado.===",
+                original: "Era só essa questão do certificado."
+            ) == "Era só essa questão do certificado.",
+            "O envelope abreviado de sinais de igual não foi removido."
+        )
+        try require(
+            ResponseSanitizer.clean(
+                "===termo jurídico===",
+                original: "===termo juridico==="
+            ) == "===termo jurídico===",
+            "Sinais de igual legítimos do texto original foram removidos."
+        )
     }
 
     /// O modelo com frequência devolve só o delimitador de abertura, sem

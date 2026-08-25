@@ -223,6 +223,12 @@ public enum ResponseSanitizer {
             result = result.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
+        // O Foundation Models também pode devolver um envelope abreviado,
+        // sem os nomes TEXTO/FIM: `===resultado===`. Tratar as duas bordas de
+        // forma independente mantém a limpeza útil durante o streaming. Só
+        // removemos o que não existia na mesma borda do texto da pessoa.
+        result = stripUnlabelledEqualsEnvelope(from: result, original: originalTrimmed)
+
         if !originalTrimmed.hasPrefix("<texto>"),
            result.lowercased().hasPrefix("<texto>") {
             result.removeFirst("<texto>".count)
@@ -248,6 +254,31 @@ public enum ResponseSanitizer {
         }
 
         return removePreamble(from: result, original: originalTrimmed)
+    }
+
+    private static func stripUnlabelledEqualsEnvelope(
+        from text: String,
+        original: String
+    ) -> String {
+        var result = text
+
+        if !original.hasPrefix("===") {
+            let leadingCount = result.prefix(while: { $0 == "=" }).count
+            if leadingCount >= 3 {
+                result.removeFirst(leadingCount)
+                result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        if !original.hasSuffix("===") {
+            let trailingCount = result.reversed().prefix(while: { $0 == "=" }).count
+            if trailingCount >= 3 {
+                result.removeLast(trailingCount)
+                result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        return result
     }
 
     /// Remove uma linha de apresentação só quando ela é a primeira de várias e

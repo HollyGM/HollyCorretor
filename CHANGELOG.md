@@ -2,6 +2,15 @@
 
 As alterações relevantes do HollyCorretor são registradas neste arquivo.
 
+## 0.3.3 — 2026-08-25
+
+- Remove também envelopes abreviados como `===texto revisado===`, sem apagar
+  sinais de igual que já faziam parte do texto original.
+- Troca a pastilha larga de seleção por um acionador circular e discreto, mais
+  próximo do comportamento contextual das Ferramentas de Escrita da Apple.
+- Torna a prévia segura de aplicativos como o WhatsApp menor e contextual,
+  posicionada junto da seleção em vez de centralizada na tela.
+
 ## 0.3.2 — 2026-08-25
 
 - Posiciona o painel a partir da seleção real, não da posição do item no menu

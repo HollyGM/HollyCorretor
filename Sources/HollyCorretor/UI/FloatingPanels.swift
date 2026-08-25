@@ -69,7 +69,7 @@ class FloatingPanel: NSPanel {
 
 // MARK: - Botão que aparece ao lado da seleção
 
-/// A pastilha "HollyCorretor" que surge quando há texto selecionado.
+/// O acionador compacto que surge quando há texto selecionado.
 @MainActor
 final class SelectionPill {
     private var panel: FloatingPanel?
@@ -96,12 +96,13 @@ final class SelectionPill {
     }
 
     private func makePanel() -> FloatingPanel {
-        let panel = FloatingPanel(size: NSSize(width: 132, height: 30), acceptsKeyboard: false)
+        let size = NSSize(width: 30, height: 30)
+        let panel = FloatingPanel(size: size, acceptsKeyboard: false)
 
-        let button = PillButton(title: "HollyCorretor", symbol: "wand.and.stars")
+        let button = PillButton(title: "", symbol: "wand.and.stars")
         button.target = self
         button.action = #selector(clicked)
-        button.frame = NSRect(x: 0, y: 0, width: 132, height: 30)
+        button.frame = NSRect(origin: .zero, size: size)
         button.autoresizingMask = [.width, .height]
 
         let container = NSView(frame: button.frame)
@@ -126,12 +127,13 @@ private final class PillButton: NSButton {
         super.init(frame: .zero)
         self.title = title
         self.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        self.imagePosition = .imageLeading
+        self.imagePosition = title.isEmpty ? .imageOnly : .imageLeading
         self.isBordered = false
         self.font = .systemFont(ofSize: 12, weight: .medium)
         self.contentTintColor = .labelColor
         self.wantsLayer = true
         self.toolTip = "Abrir o HollyCorretor para o texto selecionado"
+        self.setAccessibilityLabel("HollyCorretor")
     }
 
     @available(*, unavailable)
@@ -160,7 +162,8 @@ private final class PillButton: NSButton {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let path = NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8)
+        let radius = min(bounds.width, bounds.height) / 2
+        let path = NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius)
         (hovering ? NSColor.controlAccentColor.withAlphaComponent(0.16) : NSColor.controlBackgroundColor)
             .setFill()
         path.fill()

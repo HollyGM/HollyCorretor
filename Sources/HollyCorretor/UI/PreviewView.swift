@@ -95,7 +95,7 @@ final class PreviewViewController: NSViewController {
         noteLabel.font = .preferredFont(forTextStyle: .caption1)
         noteLabel.textColor = .secondaryLabelColor
         noteLabel.lineBreakMode = .byWordWrapping
-        noteLabel.maximumNumberOfLines = 2
+        noteLabel.maximumNumberOfLines = 1
         noteLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         cancelButton = NSButton(title: "Cancelar", target: self, action: #selector(cancelAction))
@@ -151,7 +151,8 @@ final class PreviewViewController: NSViewController {
             let originalValue = NSTextField(wrappingLabelWithString: originalText)
             originalValue.font = .systemFont(ofSize: 13)
             originalValue.textColor = .secondaryLabelColor
-            originalValue.maximumNumberOfLines = 4
+            originalValue.maximumNumberOfLines = 2
+            originalValue.lineBreakMode = .byTruncatingTail
 
             let originalStack = NSStackView(views: [originalCaption, originalValue])
             originalStack.orientation = .vertical
@@ -175,7 +176,7 @@ final class PreviewViewController: NSViewController {
 
         NSLayoutConstraint.activate(constraints)
 
-        container.setFrameSize(NSSize(width: 560, height: 320))
+        container.setFrameSize(NSSize(width: 440, height: 240))
         self.view = container
     }
 
@@ -195,7 +196,7 @@ final class PreviewViewController: NSViewController {
         textView.string = text
         textView.isEditable = true
         spinner.stopAnimation(nil)
-        noteLabel.stringValue = "Revise o texto gerado pela Apple Intelligence antes de aplicar."
+        noteLabel.stringValue = "Revise antes de aplicar."
         copyButton?.isEnabled = true
         confirmButton.isEnabled = true
         view.window?.makeFirstResponder(textView)
