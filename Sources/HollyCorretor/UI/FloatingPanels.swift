@@ -197,42 +197,12 @@ final class ActionPanel: NSViewController {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 7
-        stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 10, right: 12)
+        stack.spacing = 4
+        stack.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        // Cabeçalho discreto no mesmo espírito do painel de Ferramentas de
-        // Escrita: identidade, contexto e hierarquia antes das ações.
-        let brandIcon = NSImageView()
-        brandIcon.image = NSImage(
-            systemSymbolName: "wand.and.stars",
-            accessibilityDescription: "HollyCorretor"
-        )
-        brandIcon.contentTintColor = .controlAccentColor
-        brandIcon.symbolConfiguration = .init(pointSize: 14, weight: .semibold)
-        brandIcon.setContentHuggingPriority(.required, for: .horizontal)
-
-        let brandTitle = NSTextField(labelWithString: "HollyCorretor")
-        brandTitle.font = .systemFont(ofSize: 13, weight: .semibold)
-
-        let brandSubtitle = NSTextField(labelWithString: "Assistente de escrita")
-        brandSubtitle.font = .systemFont(ofSize: 11)
-        brandSubtitle.textColor = .secondaryLabelColor
-
-        let brandLabels = NSStackView(views: [brandTitle, brandSubtitle])
-        brandLabels.orientation = .vertical
-        brandLabels.alignment = .leading
-        brandLabels.spacing = 0
-
-        let brandHeader = NSStackView(views: [brandIcon, brandLabels])
-        brandHeader.orientation = .horizontal
-        brandHeader.alignment = .centerY
-        brandHeader.spacing = 8
-        stack.addArrangedSubview(brandHeader)
-
-        // Campo de instrução livre, com o botão de envio visível. Deixar a ação
-        // escondida apenas no Return fazia um campo vazio resultar em um bipe
-        // sem explicar o que estava faltando.
+        // A ferramenta da Apple abre direto no campo e deixa a identidade fora
+        // do caminho. O nome HollyCorretor já aparece no menu que abriu o painel.
         instructionField = NSTextField()
         instructionField.placeholderString = "Descreva sua alteração"
         instructionField.font = .systemFont(ofSize: 13)
@@ -241,26 +211,7 @@ final class ActionPanel: NSViewController {
         instructionField.action = #selector(runInstruction)
         instructionField.translatesAutoresizingMaskIntoConstraints = false
 
-        let sendButton = NSButton(
-            image: NSImage(
-                systemSymbolName: "arrow.up.circle.fill",
-                accessibilityDescription: "Aplicar instrução"
-            ) ?? NSImage(),
-            target: self,
-            action: #selector(runInstruction)
-        )
-        sendButton.isBordered = false
-        sendButton.contentTintColor = .controlAccentColor
-        sendButton.imageScaling = .scaleProportionallyUpOrDown
-        sendButton.toolTip = "Aplicar a instrução ao texto selecionado"
-        sendButton.setContentHuggingPriority(.required, for: .horizontal)
-
-        let instructionRow = NSStackView(views: [instructionField, sendButton])
-        instructionRow.orientation = .horizontal
-        instructionRow.alignment = .centerY
-        instructionRow.spacing = 6
-        instructionRow.translatesAutoresizingMaskIntoConstraints = false
-        stack.addArrangedSubview(instructionRow)
+        stack.addArrangedSubview(instructionField)
 
         // Revisar e Reescrever, lado a lado
         let primary = NSStackView(views: CorrectionAction.panelPrimary.map(makeTile))
@@ -281,13 +232,6 @@ final class ActionPanel: NSViewController {
         stack.addArrangedSubview(makeSeparator())
         stack.addArrangedSubview(makeRow(.custom, label: "Redigir…"))
 
-        let privacyNote = NSTextField(labelWithString: "Processado no Mac com Apple Intelligence")
-        privacyNote.font = .systemFont(ofSize: 10)
-        privacyNote.textColor = .tertiaryLabelColor
-        privacyNote.alignment = .center
-        privacyNote.translatesAutoresizingMaskIntoConstraints = false
-        stack.addArrangedSubview(privacyNote)
-
         let background = NSVisualEffectView()
         background.material = .popover
         background.blendingMode = .behindWindow
@@ -302,14 +246,12 @@ final class ActionPanel: NSViewController {
             stack.bottomAnchor.constraint(equalTo: background.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: background.trailingAnchor),
-            background.widthAnchor.constraint(equalToConstant: 288)
+            background.widthAnchor.constraint(equalToConstant: 244)
         ])
-        instructionRow.widthAnchor
-            .constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
+        instructionField.widthAnchor
+            .constraint(equalTo: stack.widthAnchor, constant: -16).isActive = true
         primary.widthAnchor
-            .constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
-        privacyNote.widthAnchor
-            .constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
+            .constraint(equalTo: stack.widthAnchor, constant: -16).isActive = true
 
         self.view = background
     }
@@ -342,7 +284,7 @@ final class ActionPanel: NSViewController {
         button.action = #selector(runAction(_:))
         button.translatesAutoresizingMaskIntoConstraints = false
         button.heightAnchor.constraint(equalToConstant: 26).isActive = true
-        button.widthAnchor.constraint(equalToConstant: 264).isActive = true
+        button.widthAnchor.constraint(equalToConstant: 228).isActive = true
         return button
     }
 
@@ -369,6 +311,180 @@ final class ActionPanel: NSViewController {
     override func cancelOperation(_ sender: Any?) {
         onDismiss()
     }
+}
+
+// MARK: - Estado contextual da geração
+
+/// Feedback pequeno e não modal enquanto o modelo trabalha. Ele permanece
+/// junto da seleção e deixa o aplicativo de origem ativo, como a ferramenta do
+/// sistema, em vez de abrir uma janela vazia no centro da tela.
+@MainActor
+final class GenerationPanelController: NSViewController {
+    private let actionTitle: String
+    private let onCancel: () -> Void
+
+    init(title: String, onCancel: @escaping () -> Void) {
+        self.actionTitle = title
+        self.onCancel = onCancel
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) não implementado") }
+
+    override func loadView() {
+        let spinner = NSProgressIndicator()
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.startAnimation(nil)
+
+        let titleLabel = NSTextField(labelWithString: actionTitle)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+
+        let stateLabel = NSTextField(labelWithString: "Processando no Mac…")
+        stateLabel.font = .systemFont(ofSize: 11)
+        stateLabel.textColor = .secondaryLabelColor
+
+        let labels = NSStackView(views: [titleLabel, stateLabel])
+        labels.orientation = .vertical
+        labels.alignment = .leading
+        labels.spacing = 0
+
+        let cancel = NSButton(title: "Cancelar", target: self, action: #selector(cancelAction))
+        cancel.controlSize = .small
+        cancel.bezelStyle = .roundRect
+
+        let row = NSStackView(views: [spinner, labels, NSView(), cancel])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.edgeInsets = NSEdgeInsets(top: 9, left: 10, bottom: 9, right: 10)
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        let background = panelBackground()
+        background.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.topAnchor.constraint(equalTo: background.topAnchor),
+            row.bottomAnchor.constraint(equalTo: background.bottomAnchor),
+            row.leadingAnchor.constraint(equalTo: background.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: background.trailingAnchor),
+            background.widthAnchor.constraint(equalToConstant: 310)
+        ])
+        view = background
+    }
+
+    @objc private func cancelAction() { onCancel() }
+}
+
+/// Barra de confirmação mostrada depois que o resultado já foi aplicado no
+/// documento. Reverter e alternar o original continuam disponíveis até OK.
+@MainActor
+final class AppliedResultPanelController: NSViewController {
+    private let actionTitle: String
+    private let changeCount: Int
+    private let onRevert: () -> Void
+    private let onToggleOriginal: (Bool) -> Bool
+    private let onConfirm: () -> Void
+    private var originalToggle: NSButton!
+
+    init(
+        title: String,
+        changeCount: Int,
+        onRevert: @escaping () -> Void,
+        onToggleOriginal: @escaping (Bool) -> Bool,
+        onConfirm: @escaping () -> Void
+    ) {
+        self.actionTitle = title
+        self.changeCount = changeCount
+        self.onRevert = onRevert
+        self.onToggleOriginal = onToggleOriginal
+        self.onConfirm = onConfirm
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) não implementado") }
+
+    override func loadView() {
+        let revert = NSButton(title: "Reverter", target: self, action: #selector(revertAction))
+        revert.bezelStyle = .roundRect
+        revert.isEnabled = changeCount > 0
+
+        originalToggle = NSButton(
+            image: NSImage(
+                systemSymbolName: "text.justify.leading.arrow.trianglehead.counterclockwise",
+                accessibilityDescription: "Mostrar original"
+            ) ?? NSImage(),
+            target: self,
+            action: #selector(toggleOriginalAction)
+        )
+        originalToggle.setButtonType(.toggle)
+        originalToggle.bezelStyle = .texturedRounded
+        originalToggle.toolTip = "Mostrar original"
+        originalToggle.isEnabled = changeCount > 0
+
+        let titleLabel = NSTextField(labelWithString: actionTitle)
+        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        titleLabel.alignment = .center
+
+        let countText = changeCount == 1 ? "1 alteração" : "\(changeCount) alterações"
+        let countLabel = NSTextField(labelWithString: countText)
+        countLabel.font = .systemFont(ofSize: 10)
+        countLabel.textColor = .secondaryLabelColor
+        countLabel.alignment = .center
+
+        let labels = NSStackView(views: [titleLabel, countLabel])
+        labels.orientation = .vertical
+        labels.alignment = .centerX
+        labels.spacing = 0
+
+        let ok = NSButton(title: "OK", target: self, action: #selector(confirmAction))
+        ok.bezelStyle = .rounded
+        ok.keyEquivalent = "\r"
+
+        let row = NSStackView(views: [revert, originalToggle, NSView(), labels, NSView(), ok])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 7
+        row.edgeInsets = NSEdgeInsets(top: 7, left: 8, bottom: 7, right: 8)
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        let background = panelBackground()
+        background.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.topAnchor.constraint(equalTo: background.topAnchor),
+            row.bottomAnchor.constraint(equalTo: background.bottomAnchor),
+            row.leadingAnchor.constraint(equalTo: background.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: background.trailingAnchor),
+            background.widthAnchor.constraint(equalToConstant: 420)
+        ])
+        view = background
+    }
+
+    @objc private func revertAction() { onRevert() }
+
+    @objc private func toggleOriginalAction() {
+        let showingOriginal = originalToggle.state == .on
+        guard onToggleOriginal(showingOriginal) else {
+            originalToggle.state = showingOriginal ? .off : .on
+            return
+        }
+        originalToggle.toolTip = showingOriginal ? "Mostrar texto revisado" : "Mostrar original"
+    }
+
+    @objc private func confirmAction() { onConfirm() }
+}
+
+@MainActor
+private func panelBackground() -> NSVisualEffectView {
+    let background = NSVisualEffectView()
+    background.material = .popover
+    background.blendingMode = .behindWindow
+    background.state = .active
+    background.wantsLayer = true
+    background.layer?.cornerRadius = 12
+    background.layer?.masksToBounds = true
+    return background
 }
 
 /// Botão de uma ação, nos dois formatos usados no painel.

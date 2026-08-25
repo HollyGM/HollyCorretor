@@ -3,7 +3,7 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="HollyCorretor"
-APP_VERSION="${HOLLY_VERSION:-0.3.1}"
+APP_VERSION="${HOLLY_VERSION:-0.3.2}"
 APP_BUILD="${HOLLY_BUILD_NUMBER:-1}"
 APP_DIR="$PROJECT_DIR/dist/${APP_NAME}.app"
 CONTENTS_DIR="$APP_DIR/Contents"

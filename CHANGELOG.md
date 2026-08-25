@@ -2,6 +2,21 @@
 
 As alterações relevantes do HollyCorretor são registradas neste arquivo.
 
+## 0.3.2 — 2026-08-25
+
+- Posiciona o painel a partir da seleção real, não da posição do item no menu
+  Serviços, impedindo que ele apareça cortado na borda da tela.
+- Impede que o próprio clique no Serviço feche o painel recém-aberto e localiza
+  corretamente o aplicativo que originou a seleção.
+- Preserva e restaura o intervalo exato da seleção quando o editor perde o foco.
+- Aplica revisões compatíveis diretamente no documento e mostra uma barra
+  contextual com **Reverter**, visualização do original, contador e **OK**.
+- Mantém uma prévia segura em editores sem suporte suficiente de Acessibilidade,
+  em vez de colar o resultado às cegas no cursor.
+- Substitui a janela central durante a geração por um indicador compacto junto
+  do texto e remove os sons de confirmação do fluxo de correção.
+- Adiciona testes do contador de alterações exibido após a revisão.
+
 ## 0.3.1 — 2026-08-25
 
 - Substitui os treze Serviços soltos por um único item **HollyCorretor…** no

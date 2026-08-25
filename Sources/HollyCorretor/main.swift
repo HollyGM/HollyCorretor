@@ -45,7 +45,17 @@ private struct ClipboardSnapshot: @unchecked Sendable {
 private struct CapturedSelection {
     let text: String
     let element: AXUIElement?
+    let range: CFRange?
+    let anchor: NSRect
     let clipboardChangeCount: Int?
+}
+
+private struct LocatedServiceSelection {
+    let app: NSRunningApplication
+    let element: AXUIElement
+    let range: CFRange?
+    let anchor: NSRect
+    let distanceFromPointer: CGFloat
 }
 
 /// A janela de prévia também pode ser fechada por ⌘W, mesmo com o botão padrão
@@ -74,11 +84,14 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     private var settingsWindowController: NSWindowController?
     private var historyWindowController: NSWindowController?
     private var previewPanel: PreviewPanel?
+    private var generationPanelWindow: FloatingPanel?
+    private var resultPanelWindow: FloatingPanel?
     private var isProcessing = false
     private var currentTask: Task<Void, Never>?
     private var selectionWatcher: SelectionWatcher?
     private var selectionPill: SelectionPill?
     private var actionPanelWindow: FloatingPanel?
+    private var actionPanelDismissAfter = Date.distantPast
     private var lastHit: SelectionWatcher.Hit?
     private var pillMenuItem: NSMenuItem?
     private var launchAtLoginItem: NSMenuItem?
@@ -250,28 +263,36 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     ) {
         logger.info("Serviço HollyCorretor recebido.")
         guard !isProcessing else {
+            logger.info("Serviço recusado: já há operação em andamento.")
             revealCurrentOperation()
             return
         }
         guard checkAccessibilityPermission(prompt: true) else {
+            logger.error("Serviço recusado: permissão de Acessibilidade ausente.")
             showAlert(title: "Permissão necessária", message: "Ative Acessibilidade para o HollyCorretor.")
             return
         }
-        guard let selectedText = extractPlainText(from: pboard) else {
+        guard let serviceText = extractPlainText(from: pboard) else {
+            logger.error("Serviço recusado: pasteboard sem texto legível.")
             showAlert(title: "Nenhum texto selecionado", message: "Selecione o texto e tente novamente.")
             return
         }
 
-        let targetApp = NSWorkspace.shared.frontmostApplication
+        let located = locateServiceSelection(matching: serviceText)
+        let targetApp = located?.app ?? NSWorkspace.shared.frontmostApplication
+        let selectedElement = located?.element
         let selection = CapturedSelection(
-            text: selectedText,
-            element: focusedAccessibilityElement(),
+            text: serviceText,
+            element: selectedElement,
+            range: located?.range,
+            anchor: located?.anchor ?? cursorAnchor(),
             clipboardChangeCount: nil
         )
-        let cursor = NSEvent.mouseLocation
-        let anchor = NSRect(x: cursor.x, y: cursor.y, width: 1, height: 1)
+        logger.info(
+            "Abrindo painel do Serviço: \(serviceText.count, privacy: .public) caracteres; destino=\(targetApp?.bundleIdentifier ?? "nenhum", privacy: .public); elemento=\(selectedElement != nil, privacy: .public); intervalo=\(selection.range != nil, privacy: .public)."
+        )
         processor.prewarm()
-        showActionPanel(for: selection, targetApp: targetApp, anchor: anchor)
+        showActionPanel(for: selection, targetApp: targetApp, anchor: selection.anchor)
     }
 
     /// Encaminha para o salvamento em Markdown (que não usa o modelo) ou para o
@@ -444,6 +465,10 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             return
         }
 
+        let fallbackElement = focusedAccessibilityElement(in: targetApp)
+        let fallbackRange = fallbackElement.flatMap { selectedTextRange(of: $0) }
+        let fallbackAnchor = fallbackElement.flatMap { selectionRect(of: $0) } ?? cursorAnchor()
+
         isProcessing = true
         updateStatusIcon(processing: true)
 
@@ -464,7 +489,9 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             if clipboardChanged, let selectedText = extractPlainText(from: pasteboard) {
                 let selection = CapturedSelection(
                     text: selectedText,
-                    element: nil,
+                    element: fallbackElement,
+                    range: fallbackRange,
+                    anchor: fallbackAnchor,
                     clipboardChangeCount: pasteboard.changeCount
                 )
                 start(action, selection: selection, targetApp: targetApp, clipboardSnapshot: snapshot)
@@ -504,16 +531,73 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
-        return CapturedSelection(text: text, element: element, clipboardChangeCount: nil)
+        return CapturedSelection(
+            text: text,
+            element: element,
+            range: selectedTextRange(of: element),
+            anchor: selectionRect(of: element) ?? cursorAnchor(),
+            clipboardChangeCount: nil
+        )
     }
 
-    private func focusedAccessibilityElement() -> AXUIElement? {
-        let systemWide = AXUIElementCreateSystemWide()
+    private func focusedAccessibilityElement(in app: NSRunningApplication? = nil) -> AXUIElement? {
+        let root = app.map { AXUIElementCreateApplication($0.processIdentifier) }
+            ?? AXUIElementCreateSystemWide()
         var focusedElement: AnyObject?
-        guard AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedElement) == .success,
+        guard AXUIElementCopyAttributeValue(root, kAXFocusedUIElementAttribute as CFString, &focusedElement) == .success,
               let focused = focusedElement,
               CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
         return (focused as! AXUIElement)
+    }
+
+    /// Um Serviço não informa diretamente qual aplicativo o chamou. Na maior
+    /// parte dos casos ele ainda é o aplicativo em primeiro plano, mas menus e
+    /// automações podem mudar isso entre o clique e o callback. Procurar o texto
+    /// selecionado nos aplicativos visíveis e preferir a seleção mais próxima
+    /// do ponteiro identifica o editor de origem sem depender dessa corrida.
+    private func locateServiceSelection(matching text: String) -> LocatedServiceSelection? {
+        let pointer = NSEvent.mouseLocation
+        let ownBundle = Bundle.main.bundleIdentifier
+        var apps = NSWorkspace.shared.runningApplications.filter { app in
+            app.activationPolicy == .regular
+                && !app.isTerminated
+                && !app.isHidden
+                && app.bundleIdentifier != ownBundle
+        }
+
+        if let frontmost = NSWorkspace.shared.frontmostApplication,
+           let index = apps.firstIndex(where: { $0.processIdentifier == frontmost.processIdentifier }) {
+            apps.insert(apps.remove(at: index), at: 0)
+        }
+
+        var best: LocatedServiceSelection?
+        for app in apps {
+            guard let element = focusedAccessibilityElement(in: app),
+                  selectedText(of: element) == text else { continue }
+
+            let anchor = selectionRect(of: element) ?? cursorAnchor()
+            let distance = distance(from: pointer, to: anchor)
+            logger.info(
+                "Seleção do Serviço encontrada em \(app.bundleIdentifier ?? "desconhecido", privacy: .public), distância=\(distance, privacy: .public)."
+            )
+            let match = LocatedServiceSelection(
+                app: app,
+                element: element,
+                range: selectedTextRange(of: element),
+                anchor: anchor,
+                distanceFromPointer: distance
+            )
+            if best == nil || distance < best!.distanceFromPointer {
+                best = match
+            }
+        }
+        return best
+    }
+
+    private func distance(from point: NSPoint, to rect: NSRect) -> CGFloat {
+        let dx = max(max(rect.minX - point.x, point.x - rect.maxX), 0)
+        let dy = max(max(rect.minY - point.y, point.y - rect.maxY), 0)
+        return hypot(dx, dy)
     }
 
     private func selectedText(of element: AXUIElement) -> String? {
@@ -524,15 +608,76 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         return value as? String
     }
 
+    private func selectedTextRange(of element: AXUIElement) -> CFRange? {
+        var value: AnyObject?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &value
+        ) == .success,
+            let value,
+            CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+
+        var range = CFRange()
+        guard AXValueGetValue(value as! AXValue, .cfRange, &range) else { return nil }
+        return range
+    }
+
+    private func selectionRect(of element: AXUIElement) -> NSRect? {
+        var rangeValue: AnyObject?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &rangeValue
+        ) == .success,
+            let rangeValue else { return nil }
+
+        var boundsValue: AnyObject?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element,
+            kAXBoundsForRangeParameterizedAttribute as CFString,
+            rangeValue,
+            &boundsValue
+        ) == .success,
+            let boundsValue,
+            CFGetTypeID(boundsValue) == AXValueGetTypeID() else { return nil }
+
+        var quartzRect = CGRect.zero
+        guard AXValueGetValue(boundsValue as! AXValue, .cgRect, &quartzRect),
+              quartzRect.width > 0 || quartzRect.height > 0 else { return nil }
+
+        let primaryTop = NSScreen.screens.first?.frame.maxY ?? quartzRect.maxY
+        return NSRect(
+            x: quartzRect.minX,
+            y: primaryTop - quartzRect.maxY,
+            width: quartzRect.width,
+            height: quartzRect.height
+        )
+    }
+
+    private func cursorAnchor() -> NSRect {
+        let cursor = NSEvent.mouseLocation
+        return NSRect(x: cursor.x, y: cursor.y, width: 1, height: 1)
+    }
+
     /// Escreve o resultado direto no campo de onde o texto saiu. Só age se a
     /// seleção ainda for exatamente a que foi capturada — caso a pessoa tenha
     /// clicado em outro lugar, não há o que substituir com segurança.
     private func replaceSelection(
-        of element: AXUIElement,
+        in selection: CapturedSelection,
         expecting original: String,
         with text: String
     ) -> Bool {
-        guard selectedText(of: element) == original else { return false }
+        guard let element = selection.element else { return false }
+
+        // Alguns aplicativos escondem ou recolhem a seleção quando o painel do
+        // HollyCorretor recebe o foco. Reaplicar o intervalo capturado devolve a
+        // seleção exata antes de escrever e evita colar o resultado no cursor.
+        if selectedText(of: element) != original {
+            guard let range = selection.range,
+                  setSelectedTextRange(range, of: element),
+                  selectedText(of: element) == original else { return false }
+        }
 
         var settable: DarwinBoolean = false
         guard AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &settable) == .success,
@@ -543,6 +688,21 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             kAXSelectedTextAttribute as CFString,
             text as CFString
         ) == .success
+    }
+
+    private func setSelectedTextRange(_ range: CFRange, of element: AXUIElement) -> Bool {
+        var mutableRange = range
+        guard let value = AXValueCreate(.cfRange, &mutableRange) else { return false }
+        return AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            value
+        ) == .success
+    }
+
+    private func rangeAfterReplacing(_ selection: CapturedSelection, with text: String) -> CFRange? {
+        guard let range = selection.range else { return nil }
+        return CFRange(location: range.location, length: (text as NSString).length)
     }
 
     private func extractPlainText(from pboard: NSPasteboard) -> String? {
@@ -593,7 +753,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             guard response == .OK, let fileURL = savePanel.url else { return }
             do {
                 try text.write(to: fileURL, atomically: true, encoding: .utf8)
-                self.showSuccessFeedback(playPop: true)
+                self.showSuccessFeedback(playPop: false)
                 NSWorkspace.shared.activateFileViewerSelecting([fileURL])
             } catch {
                 self.showAlert(
@@ -621,9 +781,11 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         return panel
     }
 
-    /// Abre a prévia imediatamente e vai preenchendo-a conforme o modelo
-    /// escreve. Antes disso o app ficava até 25 s sem sinal nenhum, e não havia
-    /// como desistir no meio.
+    /// Mantém o processamento junto do texto de origem. Quando o editor oferece
+    /// os atributos de acessibilidade necessários, o resultado é aplicado no
+    /// próprio documento e uma barra compacta permite conferir ou reverter.
+    /// Editores que não permitem uma troca segura continuam recebendo a prévia
+    /// tradicional, sem nenhuma colagem às cegas.
     private func processText(
         _ selection: CapturedSelection,
         action: CorrectionAction,
@@ -631,71 +793,19 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         clipboardSnapshot: ClipboardSnapshot,
         customInstruction: String? = nil
     ) {
-        let panel = makePreviewPanel()
-
-        let previewController = PreviewViewController(
-            originalText: selection.text,
+        showGenerationPanel(
             title: action.title,
-            onConfirm: { [weak self, weak panel] finalText in
-                panel?.onClose = nil
-                self?.previewPanel = nil
-                panel?.close()
-                if AppPreferences.shouldSaveHistory {
-                    HistoryStore.shared.add(
-                        actionTitle: action.title,
-                        processedText: finalText
-                    )
-                }
-
-                Task {
-                    await self?.injectText(
-                        finalText,
-                        selection: selection,
-                        targetApp: targetApp,
-                        clipboardSnapshot: clipboardSnapshot
-                    )
-                    self?.isProcessing = false
-                }
-            },
-            onCancel: { [weak self, weak panel] in
-                panel?.onClose = nil
-                self?.currentTask?.cancel()
-                self?.currentTask = nil
-                self?.previewPanel = nil
-                panel?.close()
-                clipboardSnapshot.restoreIfUnchanged(
-                    since: selection.clipboardChangeCount
+            anchor: selection.anchor,
+            onCancel: { [weak self] in
+                self?.cancelCurrentOperation(
+                    selection: selection,
+                    clipboardSnapshot: clipboardSnapshot
                 )
-                self?.isProcessing = false
-                self?.updateStatusIcon(processing: false)
-            },
-            onCopy: { [weak self, weak panel] finalText in
-                panel?.onClose = nil
-                self?.previewPanel = nil
-                panel?.close()
-                let pb = NSPasteboard.general
-                pb.clearContents()
-                pb.setString(finalText, forType: .string)
-                self?.isProcessing = false
-                self?.showSuccessFeedback(playPop: true)
             }
         )
-        panel.contentViewController = previewController
-        panel.onClose = { [weak self] in
-            self?.currentTask?.cancel()
-            self?.currentTask = nil
-            self?.previewPanel = nil
-            self?.isProcessing = false
-            self?.updateStatusIcon(processing: false)
-            clipboardSnapshot.restoreIfUnchanged(
-                since: selection.clipboardChangeCount
-            )
-        }
-        previewPanel = panel
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
+        returnFocus(to: targetApp)
 
-        currentTask = Task { [weak self, weak panel, weak previewController] in
+        currentTask = Task { [weak self] in
             guard let self else { return }
             do {
                 self.logger.info("Iniciando geração para \(action.title, privacy: .public)")
@@ -706,8 +816,8 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                     customInstruction: customInstruction
                 ) {
                     switch update {
-                    case .partial(let text):
-                        previewController?.updateStreamingText(text)
+                    case .partial:
+                        break
                     case .finished(let text):
                         finalText = text
                     }
@@ -719,19 +829,38 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                 guard !Task.isCancelled else { return }
 
                 self.currentTask = nil
+                self.closeGenerationPanel()
+                let revisedText = finalText.isEmpty ? selection.text : finalText
                 self.logger.info("Geração concluída: \(finalText.count, privacy: .public) caracteres.")
                 self.updateStatusIcon(processing: false)
-                previewController?.finishStreaming(
-                    with: finalText.isEmpty ? selection.text : finalText
-                )
+
+                if await self.applyInlineIfPossible(
+                    revisedText,
+                    selection: selection,
+                    targetApp: targetApp
+                ) {
+                    self.showAppliedResultPanel(
+                        originalSelection: selection,
+                        revisedText: revisedText,
+                        action: action,
+                        targetApp: targetApp,
+                        clipboardSnapshot: clipboardSnapshot
+                    )
+                } else {
+                    self.showFallbackPreview(
+                        revisedText,
+                        selection: selection,
+                        action: action,
+                        targetApp: targetApp,
+                        clipboardSnapshot: clipboardSnapshot
+                    )
+                }
             } catch is CancellationError {
-                // O botão Cancelar já fechou o painel e restaurou o estado.
+                self.closeGenerationPanel()
             } catch {
                 guard !Task.isCancelled else { return }
                 self.currentTask = nil
-                panel?.onClose = nil
-                self.previewPanel = nil
-                panel?.close()
+                self.closeGenerationPanel()
                 self.updateStatusIcon(processing: false)
                 self.isProcessing = false
                 clipboardSnapshot.restoreIfUnchanged(
@@ -746,11 +875,265 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         }
     }
 
+    private func showGenerationPanel(
+        title: String,
+        anchor: NSRect,
+        onCancel: @escaping () -> Void
+    ) {
+        closeGenerationPanel()
+        let controller = GenerationPanelController(title: title, onCancel: onCancel)
+        let panel = FloatingPanel(size: NSSize(width: 310, height: 58), acceptsKeyboard: false)
+        panel.contentViewController = controller
+        panel.setContentSize(controller.view.fittingSize)
+        panel.position(near: anchor, preferAbove: true, gap: 6)
+        panel.orderFrontRegardless()
+        generationPanelWindow = panel
+    }
+
+    private func closeGenerationPanel() {
+        generationPanelWindow?.orderOut(nil)
+        generationPanelWindow = nil
+    }
+
+    private func cancelCurrentOperation(
+        selection: CapturedSelection,
+        clipboardSnapshot: ClipboardSnapshot
+    ) {
+        currentTask?.cancel()
+        currentTask = nil
+        closeGenerationPanel()
+        clipboardSnapshot.restoreIfUnchanged(since: selection.clipboardChangeCount)
+        isProcessing = false
+        updateStatusIcon(processing: false)
+    }
+
+    private func returnFocus(to targetApp: NSRunningApplication?) {
+        guard let targetApp else { return }
+        NSApp.yieldActivation(to: targetApp)
+        targetApp.activate()
+    }
+
+    private func applyInlineIfPossible(
+        _ revisedText: String,
+        selection: CapturedSelection,
+        targetApp: NSRunningApplication?
+    ) async -> Bool {
+        if revisedText == selection.text { return true }
+        guard let targetApp else { return false }
+
+        returnFocus(to: targetApp)
+        guard await waitForAppActive(targetApp, maxAttempts: 30) else { return false }
+        guard replaceSelection(in: selection, expecting: selection.text, with: revisedText) else {
+            logger.info("O editor não permitiu aplicar a revisão diretamente; exibindo a prévia.")
+            return false
+        }
+        logger.info("Resultado aplicado no documento pela Acessibilidade.")
+        return true
+    }
+
+    private func showAppliedResultPanel(
+        originalSelection: CapturedSelection,
+        revisedText: String,
+        action: CorrectionAction,
+        targetApp: NSRunningApplication?,
+        clipboardSnapshot: ClipboardSnapshot
+    ) {
+        closeResultPanel()
+        let revisedSelection = CapturedSelection(
+            text: revisedText,
+            element: originalSelection.element,
+            range: rangeAfterReplacing(originalSelection, with: revisedText),
+            anchor: originalSelection.anchor,
+            clipboardChangeCount: originalSelection.clipboardChangeCount
+        )
+        var showingOriginal = revisedText == originalSelection.text
+
+        let controller = AppliedResultPanelController(
+            title: action.title,
+            changeCount: TextChangeCounter.count(from: originalSelection.text, to: revisedText),
+            onRevert: { [weak self] in
+                guard let self else { return }
+                if !showingOriginal && !self.replaceSelection(
+                    in: revisedSelection,
+                    expecting: revisedText,
+                    with: originalSelection.text
+                ) {
+                    self.showAlert(
+                        title: "O texto mudou enquanto você revisava",
+                        message: "Nada foi sobrescrito. Use Desfazer no aplicativo de origem se ainda quiser voltar ao texto anterior."
+                    )
+                    return
+                }
+                self.closeResultPanel()
+                self.finishOperation(
+                    keeping: originalSelection,
+                    text: originalSelection.text,
+                    targetApp: targetApp,
+                    clipboardSnapshot: clipboardSnapshot,
+                    playFeedback: false
+                )
+            },
+            onToggleOriginal: { [weak self] wantsOriginal in
+                guard let self else { return false }
+                let changed: Bool
+                if wantsOriginal {
+                    changed = self.replaceSelection(
+                        in: revisedSelection,
+                        expecting: revisedText,
+                        with: originalSelection.text
+                    )
+                } else {
+                    changed = self.replaceSelection(
+                        in: originalSelection,
+                        expecting: originalSelection.text,
+                        with: revisedText
+                    )
+                }
+                guard changed else {
+                    self.showAlert(
+                        title: "O texto mudou enquanto você revisava",
+                        message: "A visualização não foi alternada para evitar sobrescrever sua edição."
+                    )
+                    return false
+                }
+                showingOriginal = wantsOriginal
+                self.returnFocus(to: targetApp)
+                return true
+            },
+            onConfirm: { [weak self] in
+                guard let self else { return }
+                if showingOriginal && revisedText != originalSelection.text {
+                    guard self.replaceSelection(
+                        in: originalSelection,
+                        expecting: originalSelection.text,
+                        with: revisedText
+                    ) else {
+                        self.showAlert(
+                            title: "O texto mudou enquanto você revisava",
+                            message: "A revisão não foi confirmada para evitar sobrescrever sua edição."
+                        )
+                        return
+                    }
+                }
+                self.closeResultPanel()
+                if AppPreferences.shouldSaveHistory {
+                    HistoryStore.shared.add(actionTitle: action.title, processedText: revisedText)
+                }
+                self.finishOperation(
+                    keeping: revisedSelection,
+                    text: revisedText,
+                    targetApp: targetApp,
+                    clipboardSnapshot: clipboardSnapshot,
+                    playFeedback: true
+                )
+            }
+        )
+
+        let panel = FloatingPanel(size: NSSize(width: 420, height: 58), acceptsKeyboard: false)
+        panel.contentViewController = controller
+        panel.setContentSize(controller.view.fittingSize)
+        panel.position(near: originalSelection.anchor, preferAbove: true, gap: 6)
+        panel.orderFrontRegardless()
+        resultPanelWindow = panel
+    }
+
+    private func closeResultPanel() {
+        resultPanelWindow?.orderOut(nil)
+        resultPanelWindow = nil
+    }
+
+    private func finishOperation(
+        keeping selection: CapturedSelection,
+        text: String,
+        targetApp: NSRunningApplication?,
+        clipboardSnapshot: ClipboardSnapshot,
+        playFeedback: Bool
+    ) {
+        if let element = selection.element,
+           let range = rangeAfterReplacing(selection, with: text) {
+            let caret = CFRange(location: range.location + range.length, length: 0)
+            _ = setSelectedTextRange(caret, of: element)
+        }
+        clipboardSnapshot.restoreIfUnchanged(since: selection.clipboardChangeCount)
+        isProcessing = false
+        returnFocus(to: targetApp)
+        if playFeedback { showSuccessFeedback(playPop: false) }
+        else { updateStatusIcon(processing: false) }
+    }
+
+    private func showFallbackPreview(
+        _ revisedText: String,
+        selection: CapturedSelection,
+        action: CorrectionAction,
+        targetApp: NSRunningApplication?,
+        clipboardSnapshot: ClipboardSnapshot
+    ) {
+        let panel = makePreviewPanel()
+        let previewController = PreviewViewController(
+            originalText: selection.text,
+            title: action.title,
+            onConfirm: { [weak self, weak panel] finalText in
+                panel?.onClose = nil
+                self?.previewPanel = nil
+                panel?.close()
+                if AppPreferences.shouldSaveHistory {
+                    HistoryStore.shared.add(actionTitle: action.title, processedText: finalText)
+                }
+                Task {
+                    await self?.injectText(
+                        finalText,
+                        selection: selection,
+                        targetApp: targetApp,
+                        clipboardSnapshot: clipboardSnapshot
+                    )
+                    self?.isProcessing = false
+                }
+            },
+            onCancel: { [weak self, weak panel] in
+                panel?.onClose = nil
+                self?.previewPanel = nil
+                panel?.close()
+                clipboardSnapshot.restoreIfUnchanged(since: selection.clipboardChangeCount)
+                self?.isProcessing = false
+                self?.updateStatusIcon(processing: false)
+            },
+            onCopy: { [weak self, weak panel] finalText in
+                panel?.onClose = nil
+                self?.previewPanel = nil
+                panel?.close()
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setString(finalText, forType: .string)
+                self?.isProcessing = false
+                self?.showSuccessFeedback(playPop: false)
+            }
+        )
+        panel.contentViewController = previewController
+        panel.onClose = { [weak self] in
+            self?.previewPanel = nil
+            self?.isProcessing = false
+            self?.updateStatusIcon(processing: false)
+            clipboardSnapshot.restoreIfUnchanged(since: selection.clipboardChangeCount)
+        }
+        previewPanel = panel
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+        previewController.finishStreaming(with: revisedText)
+    }
+
     /// Uma segunda tentativa não deve virar apenas o alerta sonoro padrão do
     /// sistema. Se a prévia ainda existe, ela volta para a frente; nos poucos
     /// instantes em que o resultado está sendo aplicado, uma mensagem explica o
     /// que está acontecendo.
     private func revealCurrentOperation() {
+        if let panel = resultPanelWindow {
+            panel.orderFrontRegardless()
+            return
+        }
+        if let panel = generationPanelWindow {
+            panel.orderFrontRegardless()
+            return
+        }
         if let panel = previewPanel {
             NSApp.activate(ignoringOtherApps: true)
             panel.makeKeyAndOrderFront(nil)
@@ -799,10 +1182,20 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         // Caminho preferido: escrever direto no campo pela Acessibilidade. Não
         // mexe na área de transferência, não simula teclas e não depende de
         // espera nenhuma.
-        if let element = selection.element,
-           replaceSelection(of: element, expecting: selection.text, with: finalText) {
+        if replaceSelection(in: selection, expecting: selection.text, with: finalText) {
             logger.info("Resultado aplicado pela Acessibilidade.")
-            showSuccessFeedback(playPop: true)
+            showSuccessFeedback(playPop: false)
+            return
+        }
+
+        guard prepareSelectionForPaste(selection) else {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(finalText, forType: .string)
+            showAlert(
+                title: "Resultado copiado",
+                message: "O editor desfez a seleção e o HollyCorretor não colou no cursor para evitar duplicar o texto. Use ⌘V para colar o resultado no local desejado."
+            )
             return
         }
 
@@ -829,10 +1222,22 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         let injectionChangeCount = pasteboard.changeCount
 
         sendKeyboardShortcut(keyCode: CGKeyCode(kVK_ANSI_V), flags: .maskCommand)
-        showSuccessFeedback(playPop: true)
+        showSuccessFeedback(playPop: false)
 
         try? await Task.sleep(nanoseconds: 2_000_000_000)
         clipboardSnapshot.restoreIfUnchanged(since: injectionChangeCount)
+    }
+
+    private func prepareSelectionForPaste(_ selection: CapturedSelection) -> Bool {
+        guard let element = selection.element,
+              let range = selection.range,
+              setSelectedTextRange(range, of: element) else { return false }
+
+        // Quando o editor publica o texto selecionado, ele precisa continuar
+        // idêntico ao original. Alguns editores só publicam o intervalo; nesse
+        // caso o sucesso ao restaurá-lo é a melhor garantia disponível.
+        guard let current = selectedText(of: element) else { return true }
+        return current == selection.text
     }
 
     private func waitForAppActive(_ app: NSRunningApplication, maxAttempts: Int) async -> Bool {
@@ -924,7 +1329,8 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             pill.hide()
             // Clicar fora é a forma mais natural de dizer "não quero"; sem isto
             // o painel ficava aberto até uma ação ser escolhida.
-            self?.closeActionPanel()
+            guard let self, Date() >= self.actionPanelDismissAfter else { return }
+            self.closeActionPanel()
         }
         watcher.shouldIgnoreClick = { [weak self] point in
             guard let self else { return false }
@@ -1002,6 +1408,8 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         let selection = CapturedSelection(
             text: hit.text,
             element: hit.element,
+            range: selectedTextRange(of: hit.element),
+            anchor: hit.anchor,
             clipboardChangeCount: nil
         )
         processor.prewarm()
@@ -1013,6 +1421,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         targetApp: NSRunningApplication?,
         anchor: NSRect
     ) {
+        logger.info("Montando painel de ações junto da seleção.")
         closeActionPanel()
 
         let controller = ActionPanel(
@@ -1038,20 +1447,47 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             }
         )
 
-        let panel = FloatingPanel(size: NSSize(width: 288, height: 420), acceptsKeyboard: true)
-        panel.onResignKey = { [weak self] in self?.closeActionPanel() }
+        let panel = FloatingPanel(size: NSSize(width: 244, height: 340), acceptsKeyboard: true)
         panel.contentViewController = controller
         panel.setContentSize(controller.view.fittingSize)
         panel.position(near: anchor)
+        actionPanelWindow = panel
+        actionPanelDismissAfter = Date().addingTimeInterval(0.8)
+        logger.info(
+            "Geometria do painel: x=\(panel.frame.minX, privacy: .public), y=\(panel.frame.minY, privacy: .public), largura=\(panel.frame.width, privacy: .public), altura=\(panel.frame.height, privacy: .public); âncora x=\(anchor.minX, privacy: .public), y=\(anchor.minY, privacy: .public)."
+        )
 
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
-        actionPanelWindow = panel
+        logger.info("Painel de ações ordenado na tela.")
+
+        // O retorno do callback do Serviço pode reativar o editor mesmo depois
+        // de makeKeyAndOrderFront. Recuperar o foco uma vez, já fora do callback,
+        // torna o campo de instrução realmente digitável.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self, weak panel] in
+            guard let self, let panel, self.actionPanelWindow === panel else { return }
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKeyAndOrderFront(nil)
+        }
+
+        // Ao terminar um Serviço, o macOS devolve o foco ao editor uma vez. Se
+        // o fechamento já estiver armado, o painel se encerra no mesmo quadro
+        // em que nasce. Depois desse pequeno período, perder o foco volta a
+        // significar normalmente que a pessoa clicou fora.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self, weak panel] in
+            guard let self, let panel, self.actionPanelWindow === panel else { return }
+            panel.onResignKey = { [weak self, weak panel] in
+                guard let self, self.actionPanelWindow === panel else { return }
+                self.closeActionPanel()
+            }
+        }
     }
 
     private func closeActionPanel() {
         guard let panel = actionPanelWindow else { return }
+        logger.info("Fechando painel de ações.")
         actionPanelWindow = nil
+        actionPanelDismissAfter = .distantPast
         panel.onResignKey = nil
         panel.orderOut(nil)
     }

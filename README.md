@@ -33,7 +33,7 @@ a uma API de terceiros.
   Todo resultado é revisado antes de substituir o texto original.</em>
 </p>
 
-Versão atual: **0.3.1** — consulte o [histórico de versões](CHANGELOG.md).
+Versão atual: **0.3.2** — consulte o [histórico de versões](CHANGELOG.md).
 
 ## Compatibilidade
 
@@ -123,8 +123,10 @@ No primeiro uso:
 4. Clique com o botão direito sobre a seleção, escolha **Serviços ›
    HollyCorretor…** e selecione uma ação no painel. Também dá para usar um atalho
    de teclado ou o ícone da barra de menus.
-5. Revise o resultado na prévia.
-6. Escolha **Substituir**, **Copiar** ou **Cancelar**.
+5. O resultado aparece no próprio documento; use a barra contextual para
+   comparar o original, **Reverter** ou confirmar com **OK**.
+6. Em editores que não permitem a aplicação direta com segurança, use a prévia
+   para **Substituir**, **Copiar** ou **Cancelar**.
 
 O HollyCorretor nunca envia a mensagem automaticamente.
 

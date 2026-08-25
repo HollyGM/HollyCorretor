@@ -15,6 +15,7 @@ enum HollyCoreChecks {
         try checkPreferredBoundaries()
         try checkPartialDelimiters()
         try checkPreambleRemoval()
+        try checkChangeCounter()
         print("Todos os testes do HollyCore passaram.")
     }
 
@@ -176,6 +177,24 @@ enum HollyCoreChecks {
                 into: "Aqui está o texto corrigido:"
             ),
             "Duas linhas sem relação foram tomadas por revisão uma da outra."
+        )
+    }
+
+    private static func checkChangeCounter() throws {
+        try require(
+            TextChangeCounter.count(
+                from: "Esse testo tem algun erro.",
+                to: "Esse texto tem algum erro."
+            ) == 2,
+            "Duas palavras corrigidas deveriam contar como duas alterações."
+        )
+        try require(
+            TextChangeCounter.count(from: "Texto correto.", to: "Texto correto.") == 0,
+            "Textos idênticos não deveriam registrar alterações."
+        )
+        try require(
+            TextChangeCounter.count(from: "Uma frase.", to: "Uma frase mais clara!") == 3,
+            "Inserções e uma troca de pontuação não foram contadas corretamente."
         )
     }
 
