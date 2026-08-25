@@ -48,6 +48,21 @@ private struct CapturedSelection {
     let clipboardChangeCount: Int?
 }
 
+/// A janela de prévia também pode ser fechada por ⌘W, mesmo com o botão padrão
+/// oculto. Centralizar esse caminho aqui garante que cancelar pelo teclado limpe
+/// a operação exatamente como o botão Cancelar.
+@MainActor
+private final class PreviewPanel: NSPanel {
+    var onClose: (() -> Void)?
+
+    override func close() {
+        let handler = onClose
+        onClose = nil
+        handler?()
+        super.close()
+    }
+}
+
 @MainActor
 final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     private let processor = TextProcessor()
@@ -58,6 +73,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     private var statusItem: NSStatusItem?
     private var settingsWindowController: NSWindowController?
     private var historyWindowController: NSWindowController?
+    private var previewPanel: PreviewPanel?
     private var isProcessing = false
     private var currentTask: Task<Void, Never>?
     private var selectionWatcher: SelectionWatcher?
@@ -222,75 +238,19 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     @objc private func customSelectedText() { handle(action: .custom) }
     @objc private func markdownSelectedText() { handle(action: .markdown) }
 
-    @objc(correctService:userData:error:) dynamic
-    func correctService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
-        handleServiceRequest(pboard: pboard, action: .correct)
-    }
-
-    @objc(rewriteService:userData:error:) dynamic
-    func rewriteService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
-        handleServiceRequest(pboard: pboard, action: .rewrite)
-    }
-
-    @objc(formalizeService:userData:error:) dynamic
-    func formalizeService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
-        handleServiceRequest(pboard: pboard, action: .formalize)
-    }
-
-    @objc(simplifyService:userData:error:) dynamic
-    func simplifyService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
-        handleServiceRequest(pboard: pboard, action: .simplify)
-    }
-
-    @objc(summarizeService:userData:error:) dynamic
-    func summarizeService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
-        handleServiceRequest(pboard: pboard, action: .summarize)
-    }
-
-    @objc(customService:userData:error:) dynamic
-    func customService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
-        handleServiceRequest(pboard: pboard, action: .custom)
-    }
-
-    @objc(markdownService:userData:error:) dynamic
-    func markdownService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
-        handleServiceRequest(pboard: pboard, action: .markdown)
-    }
-
-    @objc(friendlyService:userData:error:) dynamic
-    func friendlyService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
-        handleServiceRequest(pboard: pboard, action: .friendly)
-    }
-
-    @objc(professionalService:userData:error:) dynamic
-    func professionalService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
-        handleServiceRequest(pboard: pboard, action: .professional)
-    }
-
-    @objc(conciseService:userData:error:) dynamic
-    func conciseService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
-        handleServiceRequest(pboard: pboard, action: .concise)
-    }
-
-    @objc(keyPointsService:userData:error:) dynamic
-    func keyPointsService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
-        handleServiceRequest(pboard: pboard, action: .keyPoints)
-    }
-
-    @objc(listService:userData:error:) dynamic
-    func listService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
-        handleServiceRequest(pboard: pboard, action: .list)
-    }
-
-    @objc(tableService:userData:error:) dynamic
-    func tableService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
-        handleServiceRequest(pboard: pboard, action: .table)
-    }
-
-    private func handleServiceRequest(pboard: NSPasteboard, action: CorrectionAction) {
-        logger.info("Serviço recebido: \(action.title, privacy: .public)")
+    /// O macOS não permite que um Serviço crie um submenu próprio. Em vez de
+    /// anunciar treze itens soltos, o HollyCorretor anuncia uma única entrada no
+    /// clique direito e abre aqui o painel de ações, como as Ferramentas de
+    /// Escrita da Apple.
+    @objc(hollyService:userData:error:) dynamic
+    func hollyService(
+        _ pboard: NSPasteboard,
+        userData: String?,
+        error: AutoreleasingUnsafeMutablePointer<NSString?>
+    ) {
+        logger.info("Serviço HollyCorretor recebido.")
         guard !isProcessing else {
-            NSSound.beep()
+            revealCurrentOperation()
             return
         }
         guard checkAccessibilityPermission(prompt: true) else {
@@ -303,16 +263,15 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         }
 
         let targetApp = NSWorkspace.shared.frontmostApplication
-        let snapshot = ClipboardSnapshot()
         let selection = CapturedSelection(
             text: selectedText,
-            element: nil,
+            element: focusedAccessibilityElement(),
             clipboardChangeCount: nil
         )
-        isProcessing = true
-        updateStatusIcon(processing: true)
-
-        start(action, selection: selection, targetApp: targetApp, clipboardSnapshot: snapshot)
+        let cursor = NSEvent.mouseLocation
+        let anchor = NSRect(x: cursor.x, y: cursor.y, width: 1, height: 1)
+        processor.prewarm()
+        showActionPanel(for: selection, targetApp: targetApp, anchor: anchor)
     }
 
     /// Encaminha para o salvamento em Markdown (que não usa o modelo) ou para o
@@ -450,7 +409,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         logger.info("Ação pedida: \(action.title, privacy: .public)")
         guard !isProcessing else {
             logger.info("Recusada: já há um processamento em andamento.")
-            NSSound.beep()
+            revealCurrentOperation()
             return
         }
         guard checkAccessibilityPermission(prompt: true) else {
@@ -645,8 +604,8 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         }
     }
 
-    private func makePreviewPanel() -> NSPanel {
-        let panel = NSPanel(
+    private func makePreviewPanel() -> PreviewPanel {
+        let panel = PreviewPanel(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 320),
             styleMask: [.titled, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false
@@ -678,6 +637,8 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             originalText: selection.text,
             title: action.title,
             onConfirm: { [weak self, weak panel] finalText in
+                panel?.onClose = nil
+                self?.previewPanel = nil
                 panel?.close()
                 if AppPreferences.shouldSaveHistory {
                     HistoryStore.shared.add(
@@ -697,8 +658,10 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                 }
             },
             onCancel: { [weak self, weak panel] in
+                panel?.onClose = nil
                 self?.currentTask?.cancel()
                 self?.currentTask = nil
+                self?.previewPanel = nil
                 panel?.close()
                 clipboardSnapshot.restoreIfUnchanged(
                     since: selection.clipboardChangeCount
@@ -707,6 +670,8 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                 self?.updateStatusIcon(processing: false)
             },
             onCopy: { [weak self, weak panel] finalText in
+                panel?.onClose = nil
+                self?.previewPanel = nil
                 panel?.close()
                 let pb = NSPasteboard.general
                 pb.clearContents()
@@ -716,7 +681,18 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             }
         )
         panel.contentViewController = previewController
-        NSApp.activate()
+        panel.onClose = { [weak self] in
+            self?.currentTask?.cancel()
+            self?.currentTask = nil
+            self?.previewPanel = nil
+            self?.isProcessing = false
+            self?.updateStatusIcon(processing: false)
+            clipboardSnapshot.restoreIfUnchanged(
+                since: selection.clipboardChangeCount
+            )
+        }
+        previewPanel = panel
+        NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
 
         currentTask = Task { [weak self, weak panel, weak previewController] in
@@ -753,6 +729,8 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             } catch {
                 guard !Task.isCancelled else { return }
                 self.currentTask = nil
+                panel?.onClose = nil
+                self.previewPanel = nil
                 panel?.close()
                 self.updateStatusIcon(processing: false)
                 self.isProcessing = false
@@ -766,6 +744,27 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                 )
             }
         }
+    }
+
+    /// Uma segunda tentativa não deve virar apenas o alerta sonoro padrão do
+    /// sistema. Se a prévia ainda existe, ela volta para a frente; nos poucos
+    /// instantes em que o resultado está sendo aplicado, uma mensagem explica o
+    /// que está acontecendo.
+    private func revealCurrentOperation() {
+        if let panel = previewPanel {
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKeyAndOrderFront(nil)
+            return
+        }
+        if let panel = actionPanelWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKeyAndOrderFront(nil)
+            return
+        }
+        showAlert(
+            title: "Uma correção já está em andamento",
+            message: "Aguarde a aplicação do resultado e tente novamente."
+        )
     }
 
     private func injectText(
@@ -992,7 +991,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         }
         guard !isProcessing else {
             logger.info("Pastilha clicada durante outro processamento.")
-            NSSound.beep()
+            revealCurrentOperation()
             return
         }
         logger.info("Pastilha acionada com \(hit.text.count, privacy: .public) caracteres.")
@@ -1021,7 +1020,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                 guard let self else { return }
                 self.closeActionPanel()
                 guard !self.isProcessing else {
-                    NSSound.beep()
+                    self.revealCurrentOperation()
                     return
                 }
                 self.isProcessing = true
@@ -1039,7 +1038,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             }
         )
 
-        let panel = FloatingPanel(size: NSSize(width: 268, height: 380), acceptsKeyboard: true)
+        let panel = FloatingPanel(size: NSSize(width: 288, height: 420), acceptsKeyboard: true)
         panel.onResignKey = { [weak self] in self?.closeActionPanel() }
         panel.contentViewController = controller
         panel.setContentSize(controller.view.fittingSize)

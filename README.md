@@ -33,7 +33,7 @@ a uma API de terceiros.
   Todo resultado é revisado antes de substituir o texto original.</em>
 </p>
 
-Versão atual: **0.3.0** — consulte o [histórico de versões](CHANGELOG.md).
+Versão atual: **0.3.1** — consulte o [histórico de versões](CHANGELOG.md).
 
 ## Compatibilidade
 
@@ -52,12 +52,17 @@ separadamente e serve de base para futuros clientes de outras plataformas.
 ## Como acionar
 
 A forma principal é o **menu de clique direito**: selecione o texto, clique com o
-botão direito e abra **Serviços › HollyCorretor**. As ações aparecem agrupadas
-num submenu próprio.
+botão direito e escolha **Serviços › HollyCorretor…**. Um painel flutuante reúne
+as ações de revisão e reescrita num visual semelhante às Ferramentas de Escrita
+da Apple.
 
 O menu de Serviços depende de o aplicativo de origem oferecê-lo, o que vale para
 os aplicativos nativos do macOS — Mail, Notas, Pages, Word — mas não para todos
 os feitos em Electron.
+
+Na primeira instalação, o macOS pode deixar um Serviço de terceiros desmarcado.
+Se **HollyCorretor…** não aparecer, ative-o uma vez em **Ajustes do Sistema ›
+Teclado › Atalhos de Teclado › Serviços › Texto**.
 
 Para alcançar também esses, existe a opção **Botão ao selecionar texto**, que faz
 uma pastilha do HollyCorretor aparecer ao lado de qualquer seleção, em qualquer
@@ -112,12 +117,14 @@ No primeiro uso:
 
 1. Autorize o HollyCorretor em **Ajustes do Sistema › Privacidade e Segurança ›
    Acessibilidade**.
-2. Selecione o texto em um aplicativo compatível.
-3. Clique com o botão direito sobre a seleção e escolha o item desejado em
-   **Serviços › HollyCorretor**. Também dá para usar um atalho de teclado ou o
-   ícone da barra de menus.
-4. Revise o resultado na prévia.
-5. Escolha **Substituir**, **Copiar** ou **Cancelar**.
+2. Confirme que **HollyCorretor…** está marcado em **Ajustes do Sistema ›
+   Teclado › Atalhos de Teclado › Serviços › Texto**.
+3. Selecione o texto em um aplicativo compatível.
+4. Clique com o botão direito sobre a seleção, escolha **Serviços ›
+   HollyCorretor…** e selecione uma ação no painel. Também dá para usar um atalho
+   de teclado ou o ícone da barra de menus.
+5. Revise o resultado na prévia.
+6. Escolha **Substituir**, **Copiar** ou **Cancelar**.
 
 O HollyCorretor nunca envia a mensagem automaticamente.
 

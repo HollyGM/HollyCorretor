@@ -197,11 +197,42 @@ final class ActionPanel: NSViewController {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 6
-        stack.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
+        stack.spacing = 7
+        stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 10, right: 12)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        // Campo de instrução livre
+        // Cabeçalho discreto no mesmo espírito do painel de Ferramentas de
+        // Escrita: identidade, contexto e hierarquia antes das ações.
+        let brandIcon = NSImageView()
+        brandIcon.image = NSImage(
+            systemSymbolName: "wand.and.stars",
+            accessibilityDescription: "HollyCorretor"
+        )
+        brandIcon.contentTintColor = .controlAccentColor
+        brandIcon.symbolConfiguration = .init(pointSize: 14, weight: .semibold)
+        brandIcon.setContentHuggingPriority(.required, for: .horizontal)
+
+        let brandTitle = NSTextField(labelWithString: "HollyCorretor")
+        brandTitle.font = .systemFont(ofSize: 13, weight: .semibold)
+
+        let brandSubtitle = NSTextField(labelWithString: "Assistente de escrita")
+        brandSubtitle.font = .systemFont(ofSize: 11)
+        brandSubtitle.textColor = .secondaryLabelColor
+
+        let brandLabels = NSStackView(views: [brandTitle, brandSubtitle])
+        brandLabels.orientation = .vertical
+        brandLabels.alignment = .leading
+        brandLabels.spacing = 0
+
+        let brandHeader = NSStackView(views: [brandIcon, brandLabels])
+        brandHeader.orientation = .horizontal
+        brandHeader.alignment = .centerY
+        brandHeader.spacing = 8
+        stack.addArrangedSubview(brandHeader)
+
+        // Campo de instrução livre, com o botão de envio visível. Deixar a ação
+        // escondida apenas no Return fazia um campo vazio resultar em um bipe
+        // sem explicar o que estava faltando.
         instructionField = NSTextField()
         instructionField.placeholderString = "Descreva sua alteração"
         instructionField.font = .systemFont(ofSize: 13)
@@ -209,7 +240,27 @@ final class ActionPanel: NSViewController {
         instructionField.target = self
         instructionField.action = #selector(runInstruction)
         instructionField.translatesAutoresizingMaskIntoConstraints = false
-        stack.addArrangedSubview(instructionField)
+
+        let sendButton = NSButton(
+            image: NSImage(
+                systemSymbolName: "arrow.up.circle.fill",
+                accessibilityDescription: "Aplicar instrução"
+            ) ?? NSImage(),
+            target: self,
+            action: #selector(runInstruction)
+        )
+        sendButton.isBordered = false
+        sendButton.contentTintColor = .controlAccentColor
+        sendButton.imageScaling = .scaleProportionallyUpOrDown
+        sendButton.toolTip = "Aplicar a instrução ao texto selecionado"
+        sendButton.setContentHuggingPriority(.required, for: .horizontal)
+
+        let instructionRow = NSStackView(views: [instructionField, sendButton])
+        instructionRow.orientation = .horizontal
+        instructionRow.alignment = .centerY
+        instructionRow.spacing = 6
+        instructionRow.translatesAutoresizingMaskIntoConstraints = false
+        stack.addArrangedSubview(instructionRow)
 
         // Revisar e Reescrever, lado a lado
         let primary = NSStackView(views: CorrectionAction.panelPrimary.map(makeTile))
@@ -230,6 +281,13 @@ final class ActionPanel: NSViewController {
         stack.addArrangedSubview(makeSeparator())
         stack.addArrangedSubview(makeRow(.custom, label: "Redigir…"))
 
+        let privacyNote = NSTextField(labelWithString: "Processado no Mac com Apple Intelligence")
+        privacyNote.font = .systemFont(ofSize: 10)
+        privacyNote.textColor = .tertiaryLabelColor
+        privacyNote.alignment = .center
+        privacyNote.translatesAutoresizingMaskIntoConstraints = false
+        stack.addArrangedSubview(privacyNote)
+
         let background = NSVisualEffectView()
         background.material = .popover
         background.blendingMode = .behindWindow
@@ -244,12 +302,14 @@ final class ActionPanel: NSViewController {
             stack.bottomAnchor.constraint(equalTo: background.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: background.trailingAnchor),
-            background.widthAnchor.constraint(equalToConstant: 268)
+            background.widthAnchor.constraint(equalToConstant: 288)
         ])
-        instructionField.widthAnchor
-            .constraint(equalTo: stack.widthAnchor, constant: -20).isActive = true
+        instructionRow.widthAnchor
+            .constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
         primary.widthAnchor
-            .constraint(equalTo: stack.widthAnchor, constant: -20).isActive = true
+            .constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
+        privacyNote.widthAnchor
+            .constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
 
         self.view = background
     }
@@ -282,7 +342,7 @@ final class ActionPanel: NSViewController {
         button.action = #selector(runAction(_:))
         button.translatesAutoresizingMaskIntoConstraints = false
         button.heightAnchor.constraint(equalToConstant: 26).isActive = true
-        button.widthAnchor.constraint(equalToConstant: 248).isActive = true
+        button.widthAnchor.constraint(equalToConstant: 264).isActive = true
         return button
     }
 
@@ -299,7 +359,8 @@ final class ActionPanel: NSViewController {
     @objc private func runInstruction() {
         let text = instructionField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
-            NSSound.beep()
+            instructionField.placeholderString = "Digite primeiro o que deseja alterar"
+            view.window?.makeFirstResponder(instructionField)
             return
         }
         onAction(.custom, text)

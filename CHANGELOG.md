@@ -2,6 +2,19 @@
 
 As alterações relevantes do HollyCorretor são registradas neste arquivo.
 
+## 0.3.1 — 2026-08-25
+
+- Substitui os treze Serviços soltos por um único item **HollyCorretor…** no
+  clique direito; ele abre o painel completo de ações ao lado do cursor.
+- Corrige a tentativa de criar submenu com uma barra no título, comportamento
+  que o macOS deixou de oferecer e que ocultava o nome HollyCorretor.
+- Aproxima o painel do visual das Ferramentas de Escrita da Apple, com cabeçalho,
+  campo de instrução, ações agrupadas e indicação de processamento local.
+- Ao pedir outra correção durante uma operação, traz a prévia para a frente ou
+  explica o que está acontecendo, em vez de emitir apenas um bipe.
+- Limpa o estado da operação quando a prévia é fechada, evitando que o app fique
+  preso recusando todas as tentativas seguintes.
+
 ## 0.3.0 — 2026-08-20
 
 ### Correções
