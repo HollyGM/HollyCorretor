@@ -23,7 +23,16 @@ final class SelectionWatcher {
     }
 
     var onShow: ((Hit) -> Void)?
+    /// A pastilha deixou de fazer sentido: a seleção sumiu, mudou, ou o
+    /// aplicativo da frente passou a ser um dos ignorados. Diz respeito só à
+    /// pastilha — não significa que a pessoa tenha desistido do painel.
     var onHide: (() -> Void)?
+    /// A pessoa clicou ou rolou fora da interface do HollyCorretor. É o único
+    /// sinal que significa desistência, e por isso o único que pode encerrar um
+    /// painel já aberto. Mantê-lo separado de `onHide` evita que o painel se
+    /// feche sozinho só porque a seleção deixou de existir quando ele tomou o
+    /// foco — que é justamente o que acontece assim que ele aparece.
+    var onDismissOutside: (() -> Void)?
 
     /// Responde se um clique caiu sobre a interface do próprio HollyCorretor.
     /// Sem isto, o clique na pastilha seria tratado como "o usuário clicou fora"
@@ -149,10 +158,12 @@ final class SelectionWatcher {
             pending?.cancel()
             vigil?.cancel()
             onHide?()
+            onDismissOutside?()
         case .scrollWheel:
             pending?.cancel()
             vigil?.cancel()
             onHide?()
+            onDismissOutside?()
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
             reenableIfNeeded()
         default:

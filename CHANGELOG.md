@@ -2,6 +2,37 @@
 
 As alterações relevantes do HollyCorretor são registradas neste arquivo.
 
+## 0.3.6 — 2026-09-25
+
+- Recompilado e verificado no macOS 27.2 com o Swift 6.4: o projeto compila sem
+  avisos de código e todos os testes do núcleo (`HollyCore`) passam. A
+  atualização do sistema e da Apple Intelligence não exigiu nenhuma mudança de
+  API além da migração já concluída na 0.3.5 (`GenerationError` →
+  `LanguageModelError`, `sampling` → `samplingMode`, guardrails de transformação
+  e Private Cloud Compute), confirmada contra a interface real do framework
+  Foundation Models do SDK 27.
+- Cópia instalada em `/Applications` regenerada contra o SDK do macOS 27.2 e
+  assinada com a identidade estável do Chaveiro, de modo que os Serviços do menu
+  de contexto e a permissão de Acessibilidade continuam valendo sem precisar
+  autorizar de novo.
+
+## 0.3.5 — 2026-09-11
+
+- Impede que o painel de ações se feche sozinho pouco depois de aparecer no
+  clique direito, quando o botão de seleção está ligado. O vigia da seleção só
+  era suspenso no caminho da pastilha; pelo menu de Serviços ele continuava
+  conferindo a seleção, que o próprio painel desfaz ao tomar o foco, e a tratava
+  como desistência.
+- Separa "a pastilha não faz mais sentido" de "a pessoa desistiu": agora só o
+  clique ou a rolagem fora da interface encerra um painel aberto. A seleção
+  deixar de existir passa apenas a esconder a pastilha.
+- Interpreta a devolução de foco que o macOS 27 faz ao encerrar um Serviço.
+  Ela chega depois do prazo fixo que a versão anterior supunha, e o painel
+  retoma o foco em vez de se fechar, com um teto de retomadas para não disputar
+  a ativação sem fim.
+- Auditoria de compatibilidade com o macOS 27 (Swift 6.4): compila sem avisos,
+  e a única API descontinuada no ciclo — `GenerationError` — já estava tratada.
+
 ## 0.3.4 — 2026-08-25
 
 - Remove marcadores de resposta interrompidos no meio, incluindo `===FIM`,

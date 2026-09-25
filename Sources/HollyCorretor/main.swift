@@ -110,6 +110,9 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     private var selectionPill: SelectionPill?
     private var actionPanelWindow: FloatingPanel?
     private var actionPanelDismissAfter = Date.distantPast
+    /// Até quando perder o foco ainda conta como a devolução de ativação que o
+    /// macOS faz ao encerrar um Serviço, e não como desistência da pessoa.
+    private var actionPanelFocusGraceUntil = Date.distantPast
     private var lastHit: SelectionWatcher.Hit?
     private var pillMenuItem: NSMenuItem?
     private var launchAtLoginItem: NSMenuItem?
@@ -1345,8 +1348,12 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         watcher.onHide = { [weak self] in
             self?.lastHit = nil
             pill.hide()
-            // Clicar fora é a forma mais natural de dizer "não quero"; sem isto
-            // o painel ficava aberto até uma ação ser escolhida.
+        }
+        // Clicar fora é a forma mais natural de dizer "não quero"; sem isto o
+        // painel ficaria aberto até uma ação ser escolhida. Só o clique conta:
+        // a seleção deixar de existir é consequência de o painel ter tomado o
+        // foco, e fechá-lo por isso o derrubava logo depois de aparecer.
+        watcher.onDismissOutside = { [weak self] in
             guard let self, Date() >= self.actionPanelDismissAfter else { return }
             self.closeActionPanel()
         }
@@ -1442,6 +1449,14 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         logger.info("Montando painel de ações junto da seleção.")
         closeActionPanel()
 
+        // Daqui em diante o texto já está capturado e o painel toma o foco, o
+        // que desfaz a seleção no editor. A conferência periódica do vigia leria
+        // isso como "a pessoa mudou de ideia" e fecharia o painel recém-aberto.
+        // O caminho da pastilha já suspendia o vigia; o do menu de Serviços não,
+        // e por isso o painel se fechava sozinho cerca de um segundo depois de
+        // aparecer para quem usa o clique direito com o botão de seleção ligado.
+        selectionWatcher?.suspendSelectionVigil()
+
         let controller = ActionPanel(
             onAction: { [weak self] action, instruction in
                 guard let self else { return }
@@ -1471,6 +1486,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         panel.position(near: anchor)
         actionPanelWindow = panel
         actionPanelDismissAfter = Date().addingTimeInterval(0.8)
+        actionPanelFocusGraceUntil = Date().addingTimeInterval(2.5)
         logger.info(
             "Geometria do painel: x=\(panel.frame.minX, privacy: .public), y=\(panel.frame.minY, privacy: .public), largura=\(panel.frame.width, privacy: .public), altura=\(panel.frame.height, privacy: .public); âncora x=\(anchor.minX, privacy: .public), y=\(anchor.minY, privacy: .public)."
         )
@@ -1488,16 +1504,30 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             panel.makeKeyAndOrderFront(nil)
         }
 
-        // Ao terminar um Serviço, o macOS devolve o foco ao editor uma vez. Se
-        // o fechamento já estiver armado, o painel se encerra no mesmo quadro
-        // em que nasce. Depois desse pequeno período, perder o foco volta a
-        // significar normalmente que a pessoa clicou fora.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self, weak panel] in
+        // Ao encerrar um Serviço, o macOS devolve a ativação ao editor. Antes
+        // isso era contornado armando o fechamento só depois de 0,8 s — o
+        // suficiente enquanto a devolução chegava antes disso. No macOS 27 ela
+        // chega mais tarde, o prazo vence primeiro e o painel se fecha sozinho
+        // sem ninguém ter escolhido nada.
+        //
+        // Em vez de apostar num prazo maior, a perda de foco passa a ser
+        // interpretada: enquanto durar a carência, ela é a devolução do sistema
+        // e o painel retoma o foco; depois dela, volta a significar que a
+        // pessoa saiu e o painel se fecha. O teto de retomadas evita disputar a
+        // ativação sem fim com um aplicativo que insista em tomá-la de volta.
+        var reclaims = 0
+        panel.onResignKey = { [weak self, weak panel] in
             guard let self, let panel, self.actionPanelWindow === panel else { return }
-            panel.onResignKey = { [weak self, weak panel] in
-                guard let self, self.actionPanelWindow === panel else { return }
+            guard Date() < self.actionPanelFocusGraceUntil, reclaims < 6 else {
                 self.closeActionPanel()
+                return
             }
+            reclaims += 1
+            self.logger.info(
+                "O sistema devolveu o foco ao editor; retomando o painel (\(reclaims, privacy: .public))."
+            )
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKeyAndOrderFront(nil)
         }
     }
 
@@ -1506,6 +1536,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         logger.info("Fechando painel de ações.")
         actionPanelWindow = nil
         actionPanelDismissAfter = .distantPast
+        actionPanelFocusGraceUntil = .distantPast
         panel.onResignKey = nil
         panel.orderOut(nil)
     }
