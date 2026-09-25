@@ -23,7 +23,13 @@ if [[ -d "$INSTALLED" ]]; then
     echo "Atualizando a cópia instalada em /Applications..."
     rm -rf "$INSTALLED"
     ditto "$APP_PATH" "$INSTALLED"
+    # Promovida a cópia para /Applications, a de dist/ é descartada. Enquanto ela
+    # permanecia em disco, o LaunchServices voltava a registrá-la a cada build, e
+    # duas cópias com o mesmo identificador fazem o macOS escolher qual abrir e
+    # qual expõe o Serviço do clique direito. Desregistra antes de apagar para o
+    # sistema esquecê-la de imediato, em vez de esperar a próxima varredura.
     "$LSREGISTER" -u "$APP_PATH"
+    rm -rf "$APP_PATH"
     APP_PATH="$INSTALLED"
 fi
 

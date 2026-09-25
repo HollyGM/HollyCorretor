@@ -15,6 +15,11 @@ As alterações relevantes do HollyCorretor são registradas neste arquivo.
   assinada com a identidade estável do Chaveiro, de modo que os Serviços do menu
   de contexto e a permissão de Acessibilidade continuam valendo sem precisar
   autorizar de novo.
+- `scripts/run.sh` passa a descartar a cópia de `dist/` depois de promovê-la
+  para `/Applications`. Enquanto ela ficava em disco, o LaunchServices voltava a
+  registrá-la a cada build e o macOS ficava com duas cópias do mesmo
+  identificador concorrendo por qual abrir e qual expõe o Serviço do clique
+  direito.
 
 ## 0.3.5 — 2026-09-11
 
