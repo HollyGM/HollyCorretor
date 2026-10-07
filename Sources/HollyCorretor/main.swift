@@ -689,16 +689,8 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         expecting original: String,
         with text: String
     ) -> Bool {
-        guard let element = selection.element else { return false }
-
-        // Alguns aplicativos escondem ou recolhem a seleção quando o painel do
-        // HollyCorretor recebe o foco. Reaplicar o intervalo capturado devolve a
-        // seleção exata antes de escrever e evita colar o resultado no cursor.
-        if selectedText(of: element) != original {
-            guard let range = selection.range,
-                  setSelectedTextRange(range, of: element),
-                  selectedText(of: element) == original else { return false }
-        }
+        guard let element = selection.element,
+              restoreCapturedSelection(selection, expecting: original) else { return false }
 
         var settable: DarwinBoolean = false
         guard AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &settable) == .success,
@@ -709,6 +701,61 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             kAXSelectedTextAttribute as CFString,
             text as CFString
         ) == .success
+    }
+
+    /// O mesmo texto pode aparecer várias vezes no documento. Conferir apenas
+    /// o conteúdo da seleção atual permitiria escrever em outra ocorrência.
+    /// Restaura o intervalo capturado e exige que o editor confirme o intervalo
+    /// e o texto, inclusive quando ele não publica AXSelectedText.
+    private func restoreCapturedSelection(
+        _ selection: CapturedSelection,
+        expecting original: String
+    ) -> Bool {
+        guard let element = selection.element,
+              let range = selection.range,
+              range.location >= 0, range.length > 0 else { return false }
+        let currentRange = selectedTextRange(of: element)
+        if currentRange?.location != range.location || currentRange?.length != range.length {
+            guard setSelectedTextRange(range, of: element) else { return false }
+        }
+        guard let restoredRange = selectedTextRange(of: element),
+              restoredRange.location == range.location,
+              restoredRange.length == range.length else { return false }
+
+        return (selectedText(of: element) ?? text(in: range, of: element)) == original
+    }
+
+    private func text(in range: CFRange, of element: AXUIElement) -> String? {
+        var mutableRange = range
+        if let rangeValue = AXValueCreate(.cfRange, &mutableRange) {
+            var value: AnyObject?
+            if AXUIElementCopyParameterizedAttributeValue(
+                element,
+                kAXStringForRangeParameterizedAttribute as CFString,
+                rangeValue,
+                &value
+            ) == .success, let text = value as? String {
+                return text
+            }
+        }
+
+        var value: AnyObject?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXValueAttribute as CFString,
+            &value
+        ) == .success, let text = value as? String else { return nil }
+        let string = text as NSString
+        guard range.location >= 0, range.length >= 0,
+              range.location <= string.length,
+              range.length <= string.length - range.location else { return nil }
+        return string.substring(with: NSRange(location: range.location, length: range.length))
+    }
+
+    private func capturedElementIsFocused(_ selection: CapturedSelection) -> Bool {
+        guard let element = selection.element,
+              let focused = focusedAccessibilityElement() else { return false }
+        return CFEqual(element, focused)
     }
 
     private func setSelectedTextRange(_ range: CFRange, of element: AXUIElement) -> Bool {
@@ -848,17 +895,19 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                 // fechado receberia um resultado parcial como se fosse final.
                 guard !Task.isCancelled else { return }
 
-                self.currentTask = nil
-                self.closeGenerationPanel()
                 let revisedText = finalText.isEmpty ? selection.text : finalText
                 self.logger.info("Geração concluída: \(finalText.count, privacy: .public) caracteres.")
-                self.updateStatusIcon(processing: false)
-
-                if await self.applyInlineIfPossible(
+                let appliedInline = await self.applyInlineIfPossible(
                     revisedText,
                     selection: selection,
                     targetApp: targetApp
-                ) {
+                )
+                guard !Task.isCancelled else { return }
+                self.currentTask = nil
+                self.closeGenerationPanel()
+                self.updateStatusIcon(processing: false)
+
+                if appliedInline {
                     self.showAppliedResultPanel(
                         originalSelection: selection,
                         revisedText: revisedText,
@@ -876,7 +925,14 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                     )
                 }
             } catch is CancellationError {
+                // O botão Cancelar já limpou a operação. Este task pode voltar
+                // depois de uma nova geração começar; não feche o painel dela.
+                guard !Task.isCancelled else { return }
+                self.currentTask = nil
                 self.closeGenerationPanel()
+                self.isProcessing = false
+                self.updateStatusIcon(processing: false)
+                clipboardSnapshot.restoreIfUnchanged(since: selection.clipboardChangeCount)
             } catch {
                 guard !Task.isCancelled else { return }
                 self.currentTask = nil
@@ -938,11 +994,13 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         selection: CapturedSelection,
         targetApp: NSRunningApplication?
     ) async -> Bool {
+        guard !Task.isCancelled else { return false }
         if revisedText == selection.text { return true }
         guard let targetApp else { return false }
 
         returnFocus(to: targetApp)
-        guard await waitForAppActive(targetApp, maxAttempts: 30) else { return false }
+        guard await waitForAppActive(targetApp, maxAttempts: 30),
+              !Task.isCancelled else { return false }
         guard replaceSelection(in: selection, expecting: selection.text, with: revisedText) else {
             logger.info("O editor não permitiu aplicar a revisão diretamente; exibindo a prévia.")
             return false
@@ -1205,6 +1263,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         // espera nenhuma.
         if replaceSelection(in: selection, expecting: selection.text, with: finalText) {
             logger.info("Resultado aplicado pela Acessibilidade.")
+            clipboardSnapshot.restoreIfUnchanged(since: selection.clipboardChangeCount)
             showSuccessFeedback(playPop: false)
             return
         }
@@ -1242,6 +1301,13 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         }
         let injectionChangeCount = pasteboard.changeCount
 
+        guard targetApp.isActive, capturedElementIsFocused(selection) else {
+            showAlert(
+                title: "Resultado copiado",
+                message: "O foco do editor mudou antes da colagem. Use ⌘V para colar o resultado no local desejado."
+            )
+            return
+        }
         sendKeyboardShortcut(keyCode: CGKeyCode(kVK_ANSI_V), flags: .maskCommand)
         showSuccessFeedback(playPop: false)
 
@@ -1250,24 +1316,31 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     }
 
     private func prepareSelectionForPaste(_ selection: CapturedSelection) -> Bool {
-        guard let element = selection.element,
-              let range = selection.range,
-              setSelectedTextRange(range, of: element) else { return false }
-
-        // Quando o editor publica o texto selecionado, ele precisa continuar
-        // idêntico ao original. Alguns editores só publicam o intervalo; nesse
-        // caso o sucesso ao restaurá-lo é a melhor garantia disponível.
-        guard let current = selectedText(of: element) else { return true }
-        return current == selection.text
+        guard let element = selection.element else { return false }
+        if !capturedElementIsFocused(selection) {
+            guard AXUIElementSetAttributeValue(
+                element,
+                kAXFocusedAttribute as CFString,
+                kCFBooleanTrue
+            ) == .success else { return false }
+        }
+        // ⌘V vai para o campo com foco, mesmo quando o intervalo foi alterado
+        // com sucesso em outro campo do mesmo aplicativo.
+        guard capturedElementIsFocused(selection),
+              restoreCapturedSelection(selection, expecting: selection.text) else { return false }
+        return capturedElementIsFocused(selection)
     }
 
     private func waitForAppActive(_ app: NSRunningApplication, maxAttempts: Int) async -> Bool {
         for _ in 0..<maxAttempts {
+            guard !Task.isCancelled else { return false }
             if app.isActive {
-                try? await Task.sleep(nanoseconds: 150_000_000)
-                return true
+                do { try await Task.sleep(nanoseconds: 150_000_000) }
+                catch { return false }
+                return !Task.isCancelled && app.isActive
             }
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            do { try await Task.sleep(nanoseconds: 50_000_000) }
+            catch { return false }
         }
         return false
     }
@@ -1425,15 +1498,19 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             revealCurrentOperation()
             return
         }
+        guard selectionWatcher?.isCurrent(hit) == true else {
+            selectionPill?.hide()
+            lastHit = nil
+            return
+        }
         logger.info("Pastilha acionada com \(hit.text.count, privacy: .public) caracteres.")
         selectionWatcher?.suspendSelectionVigil()
 
-        // Precisa ser lido antes de o painel aparecer e tomar o foco.
-        let targetApp = NSWorkspace.shared.frontmostApplication
+        let targetApp = hit.app
         let selection = CapturedSelection(
             text: hit.text,
             element: hit.element,
-            range: selectedTextRange(of: hit.element),
+            range: hit.range,
             anchor: hit.anchor,
             clipboardChangeCount: nil
         )

@@ -16,6 +16,10 @@ enum HollyCoreChecks {
         try checkPartialDelimiters()
         try checkPreambleRemoval()
         try checkChangeCounter()
+        try checkChunkBoundaryWhitespace()
+        try checkProcessingBudgets()
+        try checkOutputValidation()
+        try checkLongTextChangeCounter()
         print("Todos os testes do HollyCore passaram.")
     }
 
@@ -238,6 +242,111 @@ enum HollyCoreChecks {
             TextChangeCounter.count(from: "Uma frase.", to: "Uma frase mais clara!") == 3,
             "Inserções e uma troca de pontuação não foram contadas corretamente."
         )
+    }
+
+    private static func checkLongTextChangeCounter() throws {
+        let prefix = String(repeating: "palavra ", count: 10_000)
+        let suffix = String(repeating: " palavra", count: 10_000)
+        let original = prefix + "testo" + suffix
+        try require(
+            TextChangeCounter.count(from: original, to: original) == 0,
+            "Um documento longo idêntico deveria registrar zero alterações."
+        )
+        try require(
+            TextChangeCounter.count(from: original, to: prefix + "texto" + suffix) == 1,
+            "Uma correção no meio de um documento longo deveria contar uma alteração."
+        )
+        try require(
+            TextChangeCounter.count(from: "Texto final.", to: "Texto final. Novo trecho.") == 3,
+            "Uma inserção depois de um prefixo comum foi contada incorretamente."
+        )
+        try require(
+            TextChangeCounter.count(from: "Remova este começo. Texto final.", to: "Texto final.") == 4,
+            "Uma remoção antes de um sufixo comum foi contada incorretamente."
+        )
+    }
+
+    private static func checkChunkBoundaryWhitespace() throws {
+        for original in [
+            "abcdefghij klmnopqrst",
+            "abcdefghij\n\nklmnopqrst",
+            "abc" + String(repeating: " ", count: 12) + "defghijklmno"
+        ] {
+            let chunks = TextChunker.split(original, maxCharacters: 10)
+            let cleaned = chunks.map { ResponseSanitizer.clean($0.text, original: $0.text) }
+            try require(
+                TextChunker.reassemble(processedTexts: cleaned, using: chunks) == original,
+                "O espaço no limite de um bloco foi perdido ao limpar e remontar as respostas."
+            )
+            try require(
+                chunks.allSatisfy { $0.text.count <= 10 },
+                "A preservação do separador ultrapassou o limite de um bloco."
+            )
+        }
+    }
+
+    private static func checkProcessingBudgets() throws {
+        let expectedLocal: [CorrectionAction: Int] = [
+            .correct: 2_181, .rewrite: 1_920, .formalize: 1_777,
+            .simplify: 1_920, .summarize: 5_333, .custom: 1_920,
+            .markdown: 2_181, .friendly: 2_086, .professional: 1_920,
+            .concise: 4_000, .keyPoints: 6_000, .list: 3_200, .table: 2_823
+        ]
+        for action in CorrectionAction.allCases {
+            let local = TextProcessingBudget.maximumCharacters(
+                context: 8_192, instructionTokens: 500, action: action, outputCeiling: 2_400
+            )
+            try require(
+                local == expectedLocal[action],
+                "O orçamento local mudou inesperadamente para \(action.title)."
+            )
+            let cloud = TextProcessingBudget.maximumCharacters(
+                context: 32_768, instructionTokens: 500, action: action, outputCeiling: .max
+            )
+            try require(
+                cloud == 40_000,
+                "O orçamento da nuvem deveria aceitar seu teto sem overflow para \(action.title)."
+            )
+            for (context, instructionTokens) in [
+                (Int.max, 0), (Int.min, Int.max), (0, Int.max), (Int.max, Int.min)
+            ] {
+                for outputCeiling in [0, 2_400, Int.max - 1, Int.max] {
+                    let budget = TextProcessingBudget.maximumCharacters(
+                        context: context, instructionTokens: instructionTokens,
+                        action: action, outputCeiling: outputCeiling
+                    )
+                    let ceiling = outputCeiling == Int.max ? 40_000 : 8_000
+                    try require(
+                        (TextProcessingBudget.minimumChunkCharacters...ceiling).contains(budget),
+                        "Um orçamento extremo escapou dos limites seguros para \(action.title)."
+                    )
+                }
+            }
+        }
+    }
+
+    private static func checkOutputValidation() throws {
+        let input = String(repeating: "a", count: 100)
+        for action in CorrectionAction.allCases {
+            guard let floor = action.minimumOutputRatio else {
+                let short = try TextOutputValidation.validated("curto", input: input, action: action)
+                try require(short == "curto", "Uma ação que pode encurtar rejeitou sua resposta.")
+                continue
+            }
+            let threshold = Int((Double(input.count) * floor).rounded(.up))
+            let complete = String(repeating: "b", count: threshold)
+            let accepted = try TextOutputValidation.validated(complete, input: input, action: action)
+            try require(accepted == complete, "A resposta no limite mínimo foi rejeitada.")
+
+            do {
+                _ = try TextOutputValidation.validated(
+                    String(repeating: "b", count: threshold - 1), input: input, action: action
+                )
+                throw CheckFailure(description: "Uma resposta incompleta foi aceita para \(action.title).")
+            } catch TextOutputValidationError.incompleteResponse {
+                // Mesmo um bloco menor que o piso de nova divisão deve falhar.
+            }
+        }
     }
 
     /// A divisão deve preferir fim de parágrafo, depois quebra de linha,

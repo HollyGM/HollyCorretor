@@ -18,6 +18,8 @@ final class SelectionWatcher {
     struct Hit {
         let text: String
         let element: AXUIElement
+        let app: NSRunningApplication
+        let range: CFRange?
         /// Retângulo da seleção na tela, em coordenadas do Cocoa.
         let anchor: NSRect
     }
@@ -197,22 +199,46 @@ final class SelectionWatcher {
             return
         }
 
-        let anchor = selectionRect(of: element) ?? cursorAnchor()
-        onShow?(Hit(text: text, element: element, anchor: anchor))
-        watchUntilSelectionEnds(element: element, text: text)
+        let hit = Hit(
+            text: text,
+            element: element,
+            app: front,
+            range: selectedTextRange(of: element),
+            anchor: selectionRect(of: element) ?? cursorAnchor()
+        )
+        onShow?(hit)
+        watchUntilSelectionEnds(hit)
+    }
+
+    /// Trocar de aplicativo com ⌘Tab não produz um evento de mouse. O texto pode
+    /// continuar selecionado no editor anterior, mas a pastilha já não pertence
+    /// ao aplicativo da frente. Confere também o campo e o intervalo original.
+    func isCurrent(_ hit: Hit) -> Bool {
+        guard !hit.app.isTerminated,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == hit.app.processIdentifier,
+              let focused = focusedElement(),
+              CFEqual(focused, hit.element),
+              selectedText(of: focused) == hit.text else { return false }
+        let currentRange = selectedTextRange(of: focused)
+        switch (hit.range, currentRange) {
+        case (nil, nil): return true
+        case (let original?, let current?):
+            return original.location == current.location && original.length == current.length
+        default: return false
+        }
     }
 
     /// Enquanto a pastilha está à mostra, confere de vez em quando se a seleção
     /// ainda existe. Sem isto ela ficaria na tela depois de a pessoa começar a
     /// digitar — e escutar o teclado exigiria a permissão de Monitoramento de
     /// Entrada, que este recurso não precisa para nada mais.
-    private func watchUntilSelectionEnds(element: AXUIElement, text: String) {
+    private func watchUntilSelectionEnds(_ hit: Hit) {
         vigil?.cancel()
         vigil = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 700_000_000)
                 guard !Task.isCancelled, let self else { return }
-                guard self.selectedText(of: element) == text else {
+                guard self.isCurrent(hit) else {
                     self.onHide?()
                     return
                 }
@@ -250,6 +276,19 @@ final class SelectionWatcher {
             &value
         ) == .success else { return nil }
         return value as? String
+    }
+
+    private func selectedTextRange(of element: AXUIElement) -> CFRange? {
+        var value: AnyObject?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &value
+        ) == .success, let value,
+              CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(value as! AXValue, .cfRange, &range) else { return nil }
+        return range
     }
 
     /// Retângulo da seleção convertido para as coordenadas do Cocoa. Nem todo

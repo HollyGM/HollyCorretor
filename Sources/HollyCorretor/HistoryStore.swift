@@ -69,6 +69,10 @@ final class HistoryStore {
 
     func clear() {
         items.removeAll()
+        // Uma migração adiada pode ter deixado a única cópia no plist.
+        // O pedido explícito de apagar também precisa alcançar essa cópia,
+        // para que ela não seja importada de novo na próxima abertura.
+        AppPreferences.removeLegacyHistoryData()
         guard let fileURL else { return }
         do {
             if FileManager.default.fileExists(atPath: fileURL.path) {

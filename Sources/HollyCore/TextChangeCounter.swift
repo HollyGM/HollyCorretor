@@ -5,10 +5,29 @@ import Foundation
 /// alteração; inserções e remoções também valem uma cada.
 public enum TextChangeCounter {
     public static func count(from original: String, to revised: String) -> Int {
-        let before = tokens(in: original)
-        let after = tokens(in: revised)
+        let originalTokens = tokens(in: original)
+        let revisedTokens = tokens(in: revised)
 
-        guard before != after else { return 0 }
+        guard originalTokens != revisedTokens else { return 0 }
+
+        // Trechos iguais nas duas bordas não afetam a distância. Retirá-los
+        // evita uma matriz quadrática para corrigir poucas palavras num texto
+        // longo, preservando a contagem exata de inserções e remoções.
+        var start = 0
+        var originalEnd = originalTokens.count
+        var revisedEnd = revisedTokens.count
+        while start < originalEnd, start < revisedEnd,
+              originalTokens[start] == revisedTokens[start] {
+            start += 1
+        }
+        while originalEnd > start, revisedEnd > start,
+              originalTokens[originalEnd - 1] == revisedTokens[revisedEnd - 1] {
+            originalEnd -= 1
+            revisedEnd -= 1
+        }
+
+        let before = originalTokens[start..<originalEnd]
+        let after = revisedTokens[start..<revisedEnd]
         guard !before.isEmpty else { return after.count }
         guard !after.isEmpty else { return before.count }
 

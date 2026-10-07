@@ -2,6 +2,34 @@
 
 As alterações relevantes do HollyCorretor são registradas neste arquivo.
 
+## 0.3.7 — 2026-10-02
+
+- Corrige um estouro numérico que encerrava o aplicativo ao calcular o tamanho
+  dos blocos para resumos, listas e outras ações com Private Cloud Compute.
+- Exige a correspondência do intervalo e do texto capturados antes de substituir
+  uma seleção. A colagem alternativa também verifica o campo com foco, evitando
+  atingir outra ocorrência idêntica ou outro campo do mesmo aplicativo.
+- Mantém o cancelamento disponível até a aplicação do resultado e impede que
+  uma operação cancelada altere o texto ou feche o painel de uma operação nova.
+- Vincula o botão flutuante ao aplicativo, campo e intervalo de origem; mudanças
+  de foco pelo teclado invalidam seleções antigas.
+- Preserva espaços e quebras de linha exatamente na fronteira entre blocos e
+  recusa respostas excessivamente reduzidas nas ações que preservam conteúdo
+  quando não há mais como dividir e tentar novamente.
+- Reduz o trabalho do contador de alterações em documentos longos ao excluir
+  os trechos iguais no começo e no fim da comparação.
+- Apagar o histórico também remove cópias antigas cuja migração ficou pendente,
+  impedindo que os resultados apagados reapareçam na próxima abertura.
+- Compilação e instalação passam a preparar e verificar as novas cópias antes
+  de substituir as anteriores, com restauração em caso de falha. O certificado
+  da cópia instalada é reutilizado automaticamente quando está no Chaveiro.
+- Versão e número de compilação passam a vir de `Resources/Info.plist`, com as
+  substituições opcionais por variáveis de ambiente preservadas.
+- Validado no macOS 27.2 com Swift 6.4: testes do núcleo, compilação de produção,
+  assinatura e cenários de recuperação da instalação. O modelo local corrigiu
+  textos de teste curtos e um texto de 3.111 caracteres com 14 registros, sem
+  perder os registros ou os separadores entre parágrafos.
+
 ## 0.3.6 — 2026-09-25
 
 - Recompilado e verificado no macOS 27.2 com o Swift 6.4: o projeto compila sem

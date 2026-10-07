@@ -56,7 +56,7 @@ public enum TextChunker {
 
             let boundary = Boundary.allCases.lazy
                 .compactMap { lastBoundary($0, in: candidate, notBefore: earliestAccepted) }
-                .first
+                .first ?? whitespaceBoundary(at: limit, in: remaining)
 
             guard let boundary else {
                 // Nenhuma fronteira utilizável: corta no limite. Acontece com
@@ -85,6 +85,24 @@ public enum TextChunker {
         }
 
         return chunks
+    }
+
+    /// Um espaço exatamente no limite não está no candidato. Guardá-lo como
+    /// separador evita que ele vá para o começo do próximo bloco, onde a limpeza
+    /// da resposta do modelo o removeria e acabaria juntando duas palavras.
+    /// Inclui também a sequência de espaços que atravessa o limite.
+    private static func whitespaceBoundary(
+        at limit: Substring.Index,
+        in remaining: Substring
+    ) -> Substring.Index? {
+        var boundary = limit
+        while boundary > remaining.startIndex {
+            let previous = remaining.index(before: boundary)
+            guard remaining[previous].isWhitespace else { break }
+            boundary = previous
+        }
+        guard boundary < limit || remaining[limit].isWhitespace else { return nil }
+        return boundary
     }
 
     /// Índice do início do espaçamento que encerra o bloco, ou `nil` se não

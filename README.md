@@ -11,7 +11,7 @@
   <a href="https://github.com/HollyGM/HollyCorretor/actions/workflows/ci.yml"><img alt="Validação" src="https://github.com/HollyGM/HollyCorretor/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="Licença Apache 2.0" src="https://img.shields.io/badge/licença-Apache%202.0-blue.svg"></a>
   <img alt="macOS 26+" src="https://img.shields.io/badge/macOS-26%2B-black.svg">
-  <img alt="Swift 6" src="https://img.shields.io/badge/Swift-6.0-orange.svg">
+  <img alt="Swift 6.0+" src="https://img.shields.io/badge/Swift-6.0%2B-orange.svg">
 </p>
 
 > **Parte da suíte Holly**  
@@ -30,10 +30,10 @@ a uma API de terceiros.
 
 <p align="center">
   <em>Painel de prévia da ação <strong>Formalizar (juridiquês)</strong> com o menu da barra de status aberto.
-  Todo resultado é revisado antes de substituir o texto original.</em>
+  Nos editores que não permitem a aplicação direta, o resultado é revisado nesta prévia antes de substituir o texto original.</em>
 </p>
 
-Versão atual: **0.3.6** — consulte o [histórico de versões](CHANGELOG.md).
+Versão atual: **0.3.7** (compilação 3) — consulte o [histórico de versões](CHANGELOG.md).
 
 ## Compatibilidade
 
@@ -43,6 +43,7 @@ Versão atual: **0.3.6** — consulte o [histórico de versões](CHANGELOG.md).
 - Um MacBook com chip M5 atende ao requisito de arquitetura; a disponibilidade
   final também depende da versão do macOS, da região e das configurações da Apple
   Intelligence.
+- A versão 0.3.7 foi validada no macOS 27.2 com o Swift 6.4.
 
 O aplicativo ainda não funciona no Windows ou Linux. A interface, os atalhos
 globais, a leitura da seleção e o modelo de IA usam APIs exclusivas do macOS. A
@@ -60,14 +61,16 @@ O menu de Serviços depende de o aplicativo de origem oferecê-lo, o que vale pa
 os aplicativos nativos do macOS — Mail, Notas, Pages, Word — mas não para todos
 os feitos em Electron.
 
-Na primeira instalação, o macOS pode deixar um Serviço de terceiros desmarcado.
-Se **HollyCorretor…** não aparecer, ative-o uma vez em **Ajustes do Sistema ›
-Teclado › Atalhos de Teclado › Serviços › Texto**.
-
 Para alcançar também esses, existe a opção **Botão ao selecionar texto**, que faz
 uma pastilha do HollyCorretor aparecer ao lado de qualquer seleção, em qualquer
 aplicativo. Ela nasce desligada, porque exige monitorar o mouse em todo o
-sistema; ligue-a no menu da barra ou em Preferências se precisar.
+sistema; ligue-a no menu da barra ou em Preferências se precisar. A pastilha fica
+presa ao aplicativo, ao campo e ao trecho em que nasceu: trocar de aplicativo ou
+de campo, inclusive pelo teclado, a invalida.
+
+Na primeira instalação, o macOS pode deixar um Serviço de terceiros desmarcado.
+Se **HollyCorretor…** não aparecer, ative-o uma vez em **Ajustes do Sistema ›
+Teclado › Atalhos de Teclado › Serviços › Texto**.
 
 ## Ações e atalhos iniciais
 
@@ -84,12 +87,20 @@ ser alterados em **Preferências**.
 | Ação personalizada | `P` | Aplica a instrução definida em Preferências. |
 | Salvar como Markdown | `M` | Abre uma janela para salvar a seleção em um arquivo `.md`. |
 
+O painel do clique direito traz ainda um campo para descrever a alteração com as
+próprias palavras e as ações **Amigável**, **Profissional**, **Conciso**,
+**Pontos Principais**, **Lista** e **Tabela**, que não têm atalho.
+
 ## Interface
 
 O HollyCorretor vive na barra de menus, sem ícone no Dock. Ao acionar uma ação —
-por atalho, pelo ícone da barra de menus ou pelo menu **Serviços** — o resultado
-aparece em um painel de prévia editável sobre o aplicativo em uso; nada é
-substituído sem confirmação.
+por atalho, pelo ícone da barra de menus ou pelo menu **Serviços** — um indicador
+compacto acompanha a geração, que pode ser cancelada até o resultado ser
+aplicado. Quando o editor permite uma troca segura pela Acessibilidade, o
+resultado entra direto no documento, com uma barra contextual para comparar o
+original, **Reverter** ou confirmar com **OK**. Nos demais editores, aparece uma
+prévia editável com **Substituir**, **Copiar** e **Cancelar**; nada é colado às
+cegas.
 
 Os atalhos, a instrução da **Ação personalizada** e o histórico local são
 ajustados em **Preferências**:
@@ -102,7 +113,9 @@ ajustados em **Preferências**:
 ## Como compilar e usar
 
 É necessário ter as Command Line Tools da Apple ou o Xcode com o SDK do macOS 26
-ou posterior.
+ou posterior (Swift 6.0 ou mais recente). Para rodar no macOS 27, compile com o
+Swift 6.4 e o SDK do macOS 27: só com eles o app reconhece os erros que o
+framework passou a lançar nessa versão e pode usar o Private Cloud Compute.
 
 ```bash
 git clone https://github.com/HollyGM/HollyCorretor.git
@@ -112,6 +125,10 @@ cd HollyCorretor
 
 O script compila o app, cria `dist/HollyCorretor.app`, aplica uma assinatura local,
 registra os itens do menu Serviços e abre o aplicativo.
+Quando existe uma cópia em `/Applications/HollyCorretor.app`, prepara e verifica
+a atualização antes de encerrar a versão em uso, instala a nova cópia e descarta
+a de `dist/`. Se a instalação falhar, restaura a cópia anterior. No Finder, um
+duplo clique em `build_and_run.command` executa o mesmo script.
 
 No primeiro uso:
 
@@ -138,12 +155,19 @@ O HollyCorretor nunca envia a mensagem automaticamente.
 - O histórico **nasce desligado**. Quando ativado em Preferências, guarda os 10
   resultados mais recentes em `~/Library/Application Support/HollyCorretor/`,
   em arquivo com permissão restrita e proteção de dados — não mais em texto
-  claro dentro do plist de preferências. Pode ser apagado pelo menu.
-- O envio ao Private Cloud Compute também nasce desligado. Com a opção ativada,
-  apenas textos que não cabem no modelo local saem do aparelho, rumo aos
-  servidores da Apple. Para material sob sigilo, mantenha-a desligada.
+  claro dentro do plist de preferências. Pode ser apagado em **Ver histórico…**,
+  no menu da barra, o que remove também cópias antigas deixadas por versões
+  anteriores.
+- O envio ao Private Cloud Compute também nasce desligado e só está disponível
+  no macOS 27. Com a opção ativada, apenas textos que não cabem no modelo local
+  saem do aparelho, rumo aos servidores da Apple. Para material sob sigilo,
+  mantenha-a desligada.
 - Quando o aplicativo de origem expõe o campo pela API de Acessibilidade, o
   resultado é escrito direto nele e a área de transferência não é tocada.
+- Antes de escrever, o aplicativo confere se o campo, o intervalo e o texto da
+  seleção original continuam os mesmos, para não atingir outra ocorrência do
+  mesmo trecho nem outro campo. Se algo mudou, mostra a prévia ou deixa o
+  resultado na área de transferência para colar com ⌘V.
 - No caminho alternativo, que usa a área de transferência, o conteúdo anterior
   só é restaurado se ela não tiver sido alterada novamente; assim, uma cópia
   feita durante o processamento não é sobrescrita.
@@ -153,9 +177,12 @@ O HollyCorretor nunca envia a mensagem automaticamente.
 Numa tarefa de transformação, o modelo on-device devolve no máximo cerca de
 2.400 caracteres por resposta. Textos maiores são divididos automaticamente em
 blocos — preferindo fim de parágrafo, quebra de linha e fim de frase, nessa
-ordem — e recompostos ao final. O aplicativo ainda confere o tamanho de cada
-resposta e refaz o bloco dividido se o modelo tiver condensado o texto em vez de
-transformá-lo.
+ordem — e recompostos ao final, preservando os espaços e as quebras de linha da
+fronteira entre eles. O aplicativo ainda confere o tamanho de cada resposta e
+refaz o bloco dividido se o modelo tiver condensado o texto em vez de
+transformá-lo. Nas ações que preservam o conteúdo, se a resposta continuar abaixo
+do limite mínimo e o bloco já não puder ser dividido, o aplicativo informa a
+falha e mantém o texto de origem.
 
 Esse teto vem da fidelidade da saída, não da janela de contexto, que é bem maior
 (8.192 tokens). Para resumos, em que encurtar é o resultado desejado, os blocos
@@ -178,15 +205,25 @@ parecer jurídico nem valida fatos, fundamentos ou conclusões.
 ./scripts/build.sh
 ```
 
+O `test.sh` executa as verificações do núcleo (`swift run HollyCoreChecks`). O
+`build.sh` gera e assina `dist/HollyCorretor.app` sem instalar nada em
+`/Applications`; a instalação fica a cargo do `run.sh`. A versão e o número de
+compilação vêm de `Resources/Info.plist`, e as variáveis `HOLLY_VERSION` e
+`HOLLY_BUILD_NUMBER` os substituem numa compilação específica.
+
 Estrutura principal:
 
-- `Sources/HollyCore`: regras, divisão segura de textos e limpeza de respostas;
+- `Sources/HollyCore`: regras das ações, divisão segura de textos, orçamento dos
+  blocos e limpeza e validação das respostas;
 - `Sources/HollyCorretor`: integração com Apple Intelligence e recursos do macOS;
 - `Tests/HollyCoreChecks`: testes automatizados do núcleo portátil;
-- `Resources/Info.plist`: metadados do app e declaração dos Serviços do macOS;
+- `Resources/Info.plist`: versão, metadados do app e declaração dos Serviços do
+  macOS;
 - `scripts`: compilação, empacotamento e execução local.
 
-O fluxo do GitHub Actions executa testes e uma compilação de produção em macOS 26.
+O fluxo do GitHub Actions executa os testes e uma compilação de produção no
+macOS 26 e na versão mais recente disponível nos runners, além de uma auditoria
+que eleva o alvo para o macOS 27 e aponta APIs depreciadas.
 As orientações para propostas de alteração estão em [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Dependência de terceiros
@@ -203,7 +240,8 @@ tratar o app como se fosse outro — exigindo autorizar de novo em **Ajustes do
 Sistema › Privacidade e Segurança › Acessibilidade** toda vez que você compila.
 
 Para ter identidade estável, crie um certificado de assinatura de código. O
-aplicativo **Acesso às Chaves** não existe mais no macOS 27, então o caminho é o
+**Acesso às Chaves** saiu da pasta Utilitários — no macOS 27 ele fica escondido em
+`/System/Library/CoreServices/Applications/` —, então o caminho mais direto é o
 Terminal:
 
 ```bash
@@ -237,15 +275,22 @@ security add-trusted-cert -r trustRoot -p codeSign \
 
 # 3. Conferir
 security find-identity -v -p codesigning
+
+# 4. Apagar os arquivos temporários; a chave privada já está no Chaveiro
+rm -f /tmp/holly.cnf /tmp/holly.key /tmp/holly.crt /tmp/HollyCorretor.p12
 ```
 
-Com o certificado no lugar, informe o nome dele ao compilar:
+Se a cópia instalada já usa um certificado disponível no Chaveiro, o script o
+reutiliza automaticamente. Para escolher outra identidade ou assinar a primeira
+instalação, informe o nome ou a impressão digital do certificado ao compilar:
 
 ```bash
 HOLLY_SIGN_IDENTITY="Nome do certificado" ./scripts/run.sh
 ```
 
-Sem a variável, o script continua usando assinatura ad hoc e avisa a respeito.
+Sem uma cópia instalada assinada com certificado e sem a variável, o script usa
+assinatura ad hoc e avisa a respeito. Se o certificado da cópia instalada não
+estiver disponível, a compilação é interrompida para preservar sua identidade.
 
 A diferença aparece no requisito designado, que é o que o macOS guarda ao
 autorizar o aplicativo. Com assinatura ad hoc ele fixa o `cdhash` do binário, que

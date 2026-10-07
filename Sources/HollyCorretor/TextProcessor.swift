@@ -35,16 +35,9 @@ final class TextProcessor: Sendable {
         guardrails: .permissiveContentTransformations
     )
 
-    /// Usado só se a contagem real de tokens não estiver disponível.
-    private static let fallbackMaxCharsPerChunk = 4_000
-
     /// Português do Brasil mede ~3,56 caracteres por token neste modelo.
     /// Uso 3,2 para subestimar e errar sempre para o lado seguro.
-    private static let charactersPerToken = 3.2
-
-    /// Espaço guardado para os delimitadores, o enquadramento da conversa e
-    /// uma margem de erro da estimativa.
-    private static let contextReserve = 256
+    private static let charactersPerToken = TextProcessingBudget.charactersPerToken
 
     /// Teto medido, e não deduzido da janela de contexto: numa única resposta o
     /// modelo local não escreve mais que ~2.400 caracteres. Acima disso ele
@@ -54,16 +47,7 @@ final class TextProcessor: Sendable {
     /// A janela de 8.192 tokens comporta muito mais, mas quem manda é a saída.
     private static let outputCeilingCharacters = 2_400
 
-    /// Nenhum bloco do modelo local passa disto, por mais que a ação encurte o
-    /// texto: entradas muito grandes fazem o modelo ignorar trechos do meio.
-    private static let absoluteMaxCharacters = 8_000
-
-    /// O mesmo limite para o Private Cloud Compute, cuja janela é quatro vezes
-    /// maior. Sem um teto próprio, o texto continuaria sendo fatiado no tamanho
-    /// do modelo local — e cada pedaço sairia do aparelho assim mesmo.
-    private static let absoluteMaxCharactersCloud = 40_000
-
-    private static let minimumChunkCharacters = 900
+    private static let minimumChunkCharacters = TextProcessingBudget.minimumChunkCharacters
 
     // MARK: - Disponibilidade
 
@@ -266,16 +250,19 @@ final class TextProcessor: Sendable {
             return retried
         }
 
-        guard Self.lostContent(output: result, input: chunk, action: action) else {
+        guard TextOutputValidation.lostContent(output: result, input: chunk, action: action) else {
             return result
         }
-        return try await splitAndRetry(
+        if let retried = try await splitAndRetry(
             chunk,
             action: action,
             instructions: instructions,
             plan: plan,
             onPartial: onPartial
-        ) ?? result
+        ) {
+            return retried
+        }
+        return try TextOutputValidation.validated(result, input: chunk, action: action)
     }
 
     /// Divide o bloco ao meio e processa cada metade. Devolve `nil` quando não
@@ -309,19 +296,6 @@ final class TextProcessor: Sendable {
             results.append(result)
         }
         return TextChunker.reassemble(processedTexts: results, using: halves)
-    }
-
-    /// Acima de um certo tamanho o modelo local deixa de transformar o texto
-    /// inteiro e passa a condensá-lo, devolvendo bem menos do que recebeu. O
-    /// tamanho de bloco já evita isso, mas o ponto de virada muda conforme o
-    /// texto e a versão do sistema, então o resultado é sempre conferido.
-    private static func lostContent(
-        output: String,
-        input: String,
-        action: CorrectionAction
-    ) -> Bool {
-        guard let floor = action.minimumOutputRatio else { return false }
-        return Double(output.count) < Double(input.count) * floor
     }
 
     private func respond(
@@ -478,25 +452,12 @@ final class TextProcessor: Sendable {
         action: CorrectionAction,
         outputCeiling: Int
     ) -> Int {
-        // Dois tetos independentes. O primeiro é a fidelidade da saída: o modelo
-        // local não escreve mais que ~2.400 caracteres por resposta, e a entrada
-        // que cabe depende de quanto a ação alonga o texto. Corrigir quase não
-        // alonga, então aceita bloco maior; formalizar alonga bastante, então
-        // aceita menos. O teto é parâmetro porque ele foi medido no modelo
-        // local: aplicá-lo ao Private Cloud Compute anularia justamente o motivo
-        // de recorrer a ele, que é processar textos longos sem fatiar.
-        let byOutput = Int(Double(outputCeiling) / action.expectedOutputRatio)
-
-        // O segundo é a janela de contexto, que é aritmética: entrada, saída e
-        // instruções precisam caber juntas.
-        let usable = context - instructionTokens - contextReserve
-        let byContext = usable > 0
-            ? Int((Double(usable) / (1 + action.expectedOutputRatio)) * charactersPerToken)
-            : fallbackMaxCharsPerChunk
-
-        let ceiling = outputCeiling == .max ? absoluteMaxCharactersCloud : absoluteMaxCharacters
-        let budget = min(byOutput, byContext, ceiling)
-        return max(minimumChunkCharacters, budget)
+        TextProcessingBudget.maximumCharacters(
+            context: context,
+            instructionTokens: instructionTokens,
+            action: action,
+            outputCeiling: outputCeiling
+        )
     }
 
     private static func tokenCount(
