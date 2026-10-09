@@ -17,9 +17,35 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.3.7</string>
+	<string>0.4.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.hollycorretor.app</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>hollycorretor</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
-	<string>3</string>
+	<string>4</string>
+	<key>INAlternativeAppNames</key>
+	<array>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>Holly Corretor</string>
+		</dict>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>Corretor Holly</string>
+		</dict>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>Holly</string>
+		</dict>
+	</array>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>

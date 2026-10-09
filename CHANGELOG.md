@@ -2,6 +2,72 @@
 
 As alterações relevantes do HollyCorretor são registradas neste arquivo.
 
+## 0.4.0 — 2026-10-09
+
+### Siri e app Atalhos
+
+- Adiciona o endereço `hollycorretor://<ação>` (`revisar`, `reescrever`,
+  `formalizar`, `simplificar`, `resumir`, `amigavel`, `profissional`,
+  `conciso`, `pontos-principais`, `lista`, `tabela`, `personalizada` e
+  `markdown`). A ação vale para o texto selecionado no aplicativo que estava
+  em uso, com a mesma conferência dos atalhos de teclado. Instruções livres não
+  são aceitas pelo endereço, para que uma página da web não possa ditar o que
+  fazer com o texto.
+- `scripts/atalhos-siri.sh` cria cinco atalhos do app Atalhos ("Revisar com
+  Holly", "Reescrever com Holly", "Formalizar com Holly", "Simplificar com
+  Holly" e "Resumir com Holly"), que a Siri executa pelo nome.
+- Adiciona as App Intents nativas: cinco ações sobre o texto selecionado, com
+  frases da Siri em português ("Revisar texto com o HollyCorretor"), uma ação
+  com a ação como parâmetro e "Processar texto", que devolve o resultado para
+  outras etapas do atalho. Os metadados que o Xcode geraria são escritos pelo
+  próprio binário durante a compilação, com os nomes de tipo conferidos contra
+  o código. O macOS só executa App Intents de aplicativos assinados com
+  certificado da Apple (Team ID); por isso o `build.sh` as inclui no pacote
+  apenas nessa condição, em vez de anunciar ações que falhariam.
+- Declara nomes alternativos do app para a Siri ("Holly Corretor",
+  "Corretor Holly", "Holly").
+- Recusa o pedido de encerramento que o `linkd` envia 30 segundos depois de
+  executar uma App Intent. Sem isso, cada uso pela Siri fechava o HollyCorretor
+  da barra de menus. Sair pelo menu, encerrar a sessão e desligar o Mac
+  continuam funcionando.
+
+### Correções
+
+- A cópia de segurança da área de transferência passa a ser feita só quando a
+  colagem é necessária. Antes ela era tirada no início da ação e, na colagem de
+  retaguarda, podia sobrescrever algo copiado durante o processamento — além
+  de duplicar a cada atalho o conteúdo inteiro da área de transferência,
+  imagens grandes inclusive.
+- O ícone da barra não fica mais preso em "processando" quando a colagem pela
+  prévia é recusada, e não volta ao repouso no meio de uma nova operação
+  iniciada logo após a anterior.
+- Depois de colar pela prévia, o app não fica mais dois segundos recusando o
+  próximo atalho enquanto espera para restaurar a área de transferência.
+- Começar uma nova ação enquanto a barra de conferência espera o OK conta como
+  confirmação, como nas Ferramentas de Escrita da Apple, em vez de bloquear
+  qualquer correção até a barra ser fechada. A confirmação implícita não move
+  o cursor nem tira o foco da nova seleção.
+- Um aplicativo travado não congela mais o clique direito por vários
+  segundos: a busca pela seleção usa um prazo curto da Acessibilidade e para
+  assim que encontra a seleção sob o ponteiro.
+- O menu da barra não abre mais um alerta modal no meio do próprio menu quando
+  o botão de seleção não consegue ser religado.
+- Fechar Preferências não tira mais a janela de Histórico do Dock (e
+  vice-versa) quando as duas estão abertas.
+- Os alertas passam a abrir acima das outras janelas. Quando o app não estava
+  ativo, eles podiam abrir atrás do editor e, como bloqueiam o app até serem
+  fechados, davam a impressão de travamento.
+
+### Validação
+
+- Validado no macOS 27.2 com Swift 6.4: testes do núcleo, compilação de
+  produção e auditoria de depreciações com alvo no macOS 27. O atalho
+  "Revisar com Holly" foi executado de ponta a ponta: a seleção do TextEdit foi
+  lida em segundo plano, corrigida pelo modelo local e aplicada no documento.
+  As App Intents foram indexadas pelo sistema (ações e frases em pt-BR) e, sem
+  Team ID, recusadas pelo linkd; nesse teste, o app recusou o pedido de
+  encerramento e continuou na barra de menus.
+
 ## 0.3.7 — 2026-10-02
 
 - Corrige um estouro numérico que encerrava o aplicativo ao calcular o tamanho

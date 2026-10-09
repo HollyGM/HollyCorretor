@@ -102,6 +102,21 @@ final class TextProcessor: Sendable {
         }
     }
 
+    /// O resultado final, sem as etapas intermediárias. Usado pela Siri e pelo
+    /// app Atalhos, que não exibem o texto enquanto ele é gerado.
+    func process(
+        _ text: String,
+        action: CorrectionAction,
+        customInstruction: String? = nil
+    ) async throws -> String {
+        var result = text
+        for try await update in stream(text, action: action, customInstruction: customInstruction) {
+            if case .finished(let finished) = update { result = finished }
+        }
+        try Task.checkCancellation()
+        return result
+    }
+
     private func run(
         _ text: String,
         action: CorrectionAction,

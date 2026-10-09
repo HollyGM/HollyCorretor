@@ -92,6 +92,17 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$BIN_DIR/$APP_NAME" "$MACOS_DIR/$APP_NAME"
 cp "$INFO_TEMPLATE" "$CONTENTS_DIR/Info.plist"
 
+# Metadados das App Intents, que a Siri e o app Atalhos leem para descobrir as
+# ações. O Xcode os gera numa etapa própria, ausente nas Command Line Tools; aqui
+# o próprio binário os escreve a partir dos tipos compilados e confere se cada
+# nome de tipo leva de volta à intent certa. São sempre gerados, para a
+# conferência valer em toda compilação; entrar no pacote depende da assinatura,
+# decidida mais abaixo.
+APP_INTENTS_METADATA="$STAGING_DIR/Metadata.appintents"
+"$BIN_DIR/$APP_NAME" --gerar-metadados-app-intents "$APP_INTENTS_METADATA"
+test -s "$APP_INTENTS_METADATA/extract.actionsdata"
+test -s "$APP_INTENTS_METADATA/version.json"
+
 /usr/bin/plutil -replace CFBundleShortVersionString -string "$APP_VERSION" "$CONTENTS_DIR/Info.plist"
 /usr/bin/plutil -replace CFBundleVersion -string "$APP_BUILD" "$CONTENTS_DIR/Info.plist"
 
@@ -112,9 +123,42 @@ for bundle in "$RESOURCES_DIR"/*.bundle; do
     fi
 done
 
-/usr/bin/codesign --force --sign "$SIGN_IDENTITY" \
-    --identifier "com.hollycorretor.app" --timestamp=none "$STAGED_APP"
-/usr/bin/codesign --verify --strict "$STAGED_APP"
+sign_app() {
+    /usr/bin/codesign --force --sign "$SIGN_IDENTITY" \
+        --identifier "com.hollycorretor.app" --timestamp=none "$STAGED_APP"
+    /usr/bin/codesign --verify --strict "$STAGED_APP"
+}
+sign_app
+
+# O macOS só executa App Intents de aplicativos assinados com certificado
+# emitido pela Apple (com Team ID): o linkd recusa os demais com
+# "requiresValidatedBundle". Sem isso, as ações apareceriam na Siri e no app
+# Atalhos e falhariam depois de 30 segundos. Elas só entram no pacote quando
+# vão funcionar; HOLLY_APP_INTENTS=1 força a inclusão e HOLLY_APP_INTENTS=0 a
+# impede.
+TEAM_ID="$(/usr/bin/codesign -dv "$STAGED_APP" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
+case "${HOLLY_APP_INTENTS:-auto}" in
+    1) INCLUDE_APP_INTENTS=1 ;;
+    0) INCLUDE_APP_INTENTS=0 ;;
+    *) if [[ -n "$TEAM_ID" && "$TEAM_ID" != "not set" ]]; then
+           INCLUDE_APP_INTENTS=1
+       else
+           INCLUDE_APP_INTENTS=0
+       fi ;;
+esac
+if [[ "$INCLUDE_APP_INTENTS" -eq 1 ]]; then
+    cp -R "$APP_INTENTS_METADATA" "$RESOURCES_DIR/"
+    sign_app
+    if [[ -n "$TEAM_ID" && "$TEAM_ID" != "not set" ]]; then
+        echo "Ações da Siri e do app Atalhos incluídas (Team ID $TEAM_ID)."
+    else
+        echo "Aviso: ações da Siri incluídas à força, sem Team ID; o macOS vai recusá-las." >&2
+    fi
+else
+    echo "Aviso: ações nativas da Siri e do app Atalhos (App Intents) não incluídas." >&2
+    echo "O macOS só as executa em apps assinados com certificado da Apple (Team ID)." >&2
+    echo "O endereço hollycorretor://<ação> continua funcionando com a Siri." >&2
+fi
 
 if [[ -e "$APP_DIR" ]]; then
     mv "$APP_DIR" "$PREVIOUS_APP"

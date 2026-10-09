@@ -50,6 +50,46 @@ public enum CorrectionAction: Int, CaseIterable, Sendable {
         }
     }
 
+    /// Nome usado em `hollycorretor://<nome>`. Sem acento e em português, para
+    /// poder ser digitado num atalho ou ditado sem tropeço.
+    public var commandName: String {
+        switch self {
+        case .correct: "revisar"
+        case .rewrite: "reescrever"
+        case .formalize: "formalizar"
+        case .simplify: "simplificar"
+        case .summarize: "resumir"
+        case .custom: "personalizada"
+        case .markdown: "markdown"
+        case .friendly: "amigavel"
+        case .professional: "profissional"
+        case .concise: "conciso"
+        case .keyPoints: "pontos-principais"
+        case .list: "lista"
+        case .table: "tabela"
+        }
+    }
+
+    /// Aceita o `commandName`, alguns sinônimos e variações de acento e caixa.
+    public init?(commandName: String) {
+        let key = commandName
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/").union(.whitespaces))
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+        if let match = Self.allCases.first(where: { $0.commandName == key }) {
+            self = match
+            return
+        }
+        let aliases: [String: CorrectionAction] = [
+            "corrigir": .correct,
+            "resumo": .summarize,
+            "pontosprincipais": .keyPoints,
+            "pontos_principais": .keyPoints,
+            "topicos": .keyPoints
+        ]
+        guard let alias = aliases[key] else { return nil }
+        self = alias
+    }
+
     public var symbolName: String {
         switch self {
         case .correct: "text.magnifyingglass"

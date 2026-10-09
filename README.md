@@ -33,7 +33,7 @@ a uma API de terceiros.
   Nos editores que não permitem a aplicação direta, o resultado é revisado nesta prévia antes de substituir o texto original.</em>
 </p>
 
-Versão atual: **0.3.7** (compilação 3) — consulte o [histórico de versões](CHANGELOG.md).
+Versão atual: **0.4.0** (compilação 4) — consulte o [histórico de versões](CHANGELOG.md).
 
 ## Compatibilidade
 
@@ -43,7 +43,7 @@ Versão atual: **0.3.7** (compilação 3) — consulte o [histórico de versões
 - Um MacBook com chip M5 atende ao requisito de arquitetura; a disponibilidade
   final também depende da versão do macOS, da região e das configurações da Apple
   Intelligence.
-- A versão 0.3.7 foi validada no macOS 27.2 com o Swift 6.4.
+- A versão 0.4.0 foi validada no macOS 27.2 com o Swift 6.4.
 
 O aplicativo ainda não funciona no Windows ou Linux. A interface, os atalhos
 globais, a leitura da seleção e o modelo de IA usam APIs exclusivas do macOS. A
@@ -71,6 +71,44 @@ de campo, inclusive pelo teclado, a invalida.
 Na primeira instalação, o macOS pode deixar um Serviço de terceiros desmarcado.
 Se **HollyCorretor…** não aparecer, ative-o uma vez em **Ajustes do Sistema ›
 Teclado › Atalhos de Teclado › Serviços › Texto**.
+
+## Pela Siri e pelo app Atalhos
+
+Há dois caminhos. O primeiro funciona em qualquer instalação.
+
+**Atalhos chamados pelo nome.** Rode uma vez:
+
+```bash
+./scripts/atalhos-siri.sh
+```
+
+O script cria cinco atalhos no app Atalhos — **Revisar com Holly**,
+**Reescrever com Holly**, **Formalizar com Holly**, **Simplificar com Holly** e
+**Resumir com Holly** — e o app pede a confirmação de cada um. Depois, selecione
+um texto em qualquer aplicativo e diga, por exemplo, *"E aí Siri, revisar com
+Holly"*. Cada atalho apenas abre o endereço `hollycorretor://revisar` (ou o da
+ação correspondente), e o resultado passa pela mesma conferência dos atalhos de
+teclado.
+
+O endereço também atende lançadores, o Terminal (`open hollycorretor://resumir`)
+e qualquer automação. Ações aceitas: `revisar`, `reescrever`, `formalizar`,
+`simplificar`, `resumir`, `amigavel`, `profissional`, `conciso`,
+`pontos-principais`, `lista`, `tabela`, `personalizada` e `markdown`. O
+endereço não aceita instruções livres: qualquer página da web pode abrir um
+endereço, e ela não deve poder ditar o que fazer com o seu texto.
+
+**Ações nativas (App Intents).** O app também traz as ações no padrão da Apple:
+**Revisar**, **Reescrever**, **Formalizar**, **Simplificar** e **Resumir texto
+selecionado**, com frases prontas para a Siri (*"Revisar texto com o
+HollyCorretor"*, *"Corrigir com o HollyCorretor"*…); **Aplicar ação ao texto
+selecionado**, com a ação como parâmetro; e **Processar texto**, que recebe um
+texto de outra etapa do atalho e devolve o resultado sem tocar em documento
+nenhum. O macOS só executa App Intents de aplicativos assinados com certificado
+emitido pela Apple: com o certificado local descrito em
+[Assinatura](#assinatura-e-a-permissão-de-acessibilidade), o serviço do sistema
+(`linkd`) recusa a conexão. Por isso o `build.sh` só inclui essas ações quando a
+assinatura tem Team ID, em vez de anunciar ações que falhariam. Veja abaixo como
+obter um certificado gratuito.
 
 ## Ações e atalhos iniciais
 
@@ -207,7 +245,11 @@ parecer jurídico nem valida fatos, fundamentos ou conclusões.
 
 O `test.sh` executa as verificações do núcleo (`swift run HollyCoreChecks`). O
 `build.sh` gera e assina `dist/HollyCorretor.app` sem instalar nada em
-`/Applications`; a instalação fica a cargo do `run.sh`. A versão e o número de
+`/Applications`; a instalação fica a cargo do `run.sh`. As Command Line Tools
+não trazem a etapa do Xcode que extrai os metadados das App Intents
+(`Metadata.appintents`); o `build.sh` os obtém do próprio binário
+(`HollyCorretor --gerar-metadados-app-intents <pasta>`), que confere cada nome
+de tipo contra o código compilado. A versão e o número de
 compilação vêm de `Resources/Info.plist`, e as variáveis `HOLLY_VERSION` e
 `HOLLY_BUILD_NUMBER` os substituem numa compilação específica.
 
@@ -216,10 +258,13 @@ Estrutura principal:
 - `Sources/HollyCore`: regras das ações, divisão segura de textos, orçamento dos
   blocos e limpeza e validação das respostas;
 - `Sources/HollyCorretor`: integração com Apple Intelligence e recursos do macOS;
+- `Sources/HollyCorretor/Intents`: ações da Siri e do app Atalhos (App Intents)
+  e o gerador dos metadados que o sistema lê;
 - `Tests/HollyCoreChecks`: testes automatizados do núcleo portátil;
 - `Resources/Info.plist`: versão, metadados do app e declaração dos Serviços do
   macOS;
-- `scripts`: compilação, empacotamento e execução local.
+- `scripts`: compilação, empacotamento, execução local e criação dos atalhos da
+  Siri.
 
 O fluxo do GitHub Actions executa os testes e uma compilação de produção no
 macOS 26 e na versão mais recente disponível nos runners, além de uma auditoria
@@ -287,6 +332,27 @@ instalação, informe o nome ou a impressão digital do certificado ao compilar:
 ```bash
 HOLLY_SIGN_IDENTITY="Nome do certificado" ./scripts/run.sh
 ```
+
+### Certificado da Apple para as ações nativas da Siri
+
+As App Intents exigem um certificado com Team ID. Pelo que o sistema confere, um
+certificado **Apple Development** — gratuito com qualquer Apple ID — deve
+bastar para uso no próprio Mac (este caminho ainda não foi testado com ele):
+
+1. Instale o Xcode pela App Store e abra **Xcode › Settings › Accounts**.
+2. Adicione o seu Apple ID e, em **Manage Certificates…**, clique em **+** e
+   escolha **Apple Development**.
+3. Confira o nome com `security find-identity -v -p codesigning` e compile com
+   ele:
+
+```bash
+HOLLY_SIGN_IDENTITY="Apple Development: seu@email (XXXXXXXXXX)" ./scripts/run.sh
+```
+
+Como a identidade muda, a permissão de Acessibilidade precisa ser concedida mais
+uma vez. Nas compilações seguintes o script reaproveita o certificado da cópia
+instalada e inclui as ações automaticamente. `HOLLY_APP_INTENTS=1` força a
+inclusão e `HOLLY_APP_INTENTS=0` a impede.
 
 Sem uma cópia instalada assinada com certificado e sem a variável, o script usa
 assinatura ad hoc e avisa a respeito. Se o certificado da cópia instalada não

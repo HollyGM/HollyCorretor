@@ -58,6 +58,42 @@ private struct LocatedServiceSelection {
     let distanceFromPointer: CGFloat
 }
 
+/// Por que uma ação não pôde começar. Os atalhos de teclado mostram a
+/// mensagem num alerta; a Siri e o app Atalhos a recebem como erro, porque um
+/// alerta modal deixaria a Siri esperando uma resposta que nunca vem.
+enum ActionStartFailure: Error {
+    case busy
+    case accessibilityDenied
+    case secureInput
+    case noSelection
+    case targetUnavailable
+
+    var title: String {
+        switch self {
+        case .busy: "Uma correção já está em andamento"
+        case .accessibilityDenied: "Permissão necessária"
+        case .secureInput: "Entrada protegida ativa"
+        case .noSelection: "Nenhum texto selecionado"
+        case .targetUnavailable: "Aplicativo de origem indisponível"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .busy:
+            "Aguarde a aplicação do resultado e tente novamente."
+        case .accessibilityDenied:
+            "Autorize o HollyCorretor em Ajustes do Sistema › Privacidade e Segurança › Acessibilidade."
+        case .secureInput:
+            "Um campo seguro (como o de uma senha) está em foco. Saia dele e tente novamente."
+        case .noSelection:
+            "Selecione um texto e tente novamente. O HollyCorretor não usa “Selecionar tudo” automaticamente para evitar alterações indesejadas."
+        case .targetUnavailable:
+            "Não foi possível voltar ao aplicativo em que o texto está selecionado. Traga-o para a frente e tente novamente."
+        }
+    }
+}
+
 /// A janela de prévia também pode ser fechada por ⌘W, mesmo com o botão padrão
 /// oculto. Centralizar esse caminho aqui garante que cancelar pelo teclado limpe
 /// a operação exatamente como o botão Cancelar.
@@ -93,6 +129,10 @@ private final class PreviewPanel: NSPanel {
 
 @MainActor
 final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
+    /// Acesso das App Intents ao aplicativo em execução. A Siri e o app Atalhos
+    /// rodam as ações dentro deste mesmo processo.
+    private(set) static weak var shared: HollyCorretorApp?
+
     private let processor = TextProcessor()
     private let logger = Logger(
         subsystem: "com.hollycorretor.app",
@@ -118,6 +158,19 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     private var launchAtLoginItem: NSMenuItem?
     private var aiWarningItem: NSMenuItem?
     private var aiWarningSeparator: NSMenuItem?
+    /// Confirma, sem mexer na seleção nem no foco, um resultado que já está no
+    /// documento e só aguarda o OK. Começar outra ação vale como confirmação,
+    /// como nas Ferramentas de Escrita da Apple.
+    private var pendingResultConfirmation: (() -> Void)?
+    /// Último aplicativo comum que esteve na frente. Quando a Siri ou o app
+    /// Atalhos acionam uma ação, eles mesmos podem estar na frente; o texto
+    /// selecionado continua no aplicativo anterior.
+    private var lastExternalApp: NSRunningApplication?
+
+    override init() {
+        super.init()
+        Self.shared = self
+    }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.servicesProvider = self
@@ -132,6 +185,22 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         setupShortcuts()
         refreshAIStatus()
         startSelectionWatcherIfEnabled()
+
+        if let front = NSWorkspace.shared.frontmostApplication, isExternalApp(front) {
+            lastExternalApp = front
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let activated = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                as? NSRunningApplication
+            MainActor.assumeIsolated {
+                guard let self, let activated, self.isExternalApp(activated) else { return }
+                self.lastExternalApp = activated
+            }
+        }
 
         NotificationCenter.default.addObserver(
             forName: .hollySelectionPillPreferenceChanged,
@@ -244,8 +313,10 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             launchAtLoginItem?.state = SMAppService.mainApp.status == .enabled ? .on : .off
             // A permissão pode ter sido concedida depois da abertura; tenta de
             // novo em vez de exigir que a pessoa reabra o aplicativo.
+            // Sem alerta aqui: um alerta modal aberto no meio do rastreamento
+            // do menu trava o menu. O próprio item já indica o que falta.
             if AppPreferences.showsSelectionPill, selectionWatcher?.isRunning != true {
-                startSelectionWatcherIfEnabled()
+                startSelectionWatcherIfEnabled(alertOnFailure: false)
             }
             selectionWatcher?.reenableIfNeeded()
             refreshPillMenuItem()
@@ -283,6 +354,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         error: AutoreleasingUnsafeMutablePointer<NSString?>
     ) {
         logger.info("Serviço HollyCorretor recebido.")
+        settlePendingResult()
         guard !isProcessing else {
             logger.info("Serviço recusado: já há operação em andamento.")
             revealCurrentOperation()
@@ -318,11 +390,15 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
 
     /// Encaminha para o salvamento em Markdown (que não usa o modelo) ou para o
     /// processamento pela Apple Intelligence.
+    ///
+    /// `clipboardSnapshot` só existe quando a captura precisou da área de
+    /// transferência (⌘C). Nos demais caminhos ela ainda não foi tocada, e a
+    /// cópia de segurança é feita apenas se a colagem vier a ser necessária.
     private func start(
         _ action: CorrectionAction,
         selection: CapturedSelection,
         targetApp: NSRunningApplication?,
-        clipboardSnapshot: ClipboardSnapshot,
+        clipboardSnapshot: ClipboardSnapshot?,
         customInstruction: String? = nil
     ) {
         // "Redigir…" pede a instrução na hora. Sem isto ela só poderia ser
@@ -333,7 +409,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             guard let escrita = promptForInstruction() else {
                 isProcessing = false
                 updateStatusIcon(processing: false)
-                clipboardSnapshot.restoreIfUnchanged(
+                clipboardSnapshot?.restoreIfUnchanged(
                     since: selection.clipboardChangeCount
                 )
                 return
@@ -374,6 +450,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
 
         NSApp.activate(ignoringOtherApps: true)
         alert.window.initialFirstResponder = field
+        alert.window.level = .modalPanel
 
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         let texto = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -413,8 +490,16 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     }
 
     nonisolated func windowWillClose(_ notification: Notification) {
+        let closing = notification.object as? NSWindow
         MainActor.assumeIsolated {
-            _ = NSApp.setActivationPolicy(.accessory)
+            // Com Preferências e Histórico abertos ao mesmo tempo, fechar uma
+            // não pode tirar a outra do Dock e da troca de aplicativos.
+            let stillOpen = [settingsWindowController, historyWindowController]
+                .compactMap { $0?.window }
+                .contains { $0 !== closing && $0.isVisible }
+            if !stillOpen {
+                _ = NSApp.setActivationPolicy(.accessory)
+            }
         }
     }
 
@@ -445,88 +530,216 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
 
     @objc private func quit() { NSApp.terminate(nil) }
 
+    /// Depois de executar uma App Intent, o linkd espera 30 segundos e pede ao
+    /// aplicativo que se encerre, supondo que o abriu só para aquilo. Um app de
+    /// barra de menus que já estava em uso não pode sumir por isso. Só esse
+    /// pedido é recusado: sair pelo menu, encerrar a sessão e desligar o Mac
+    /// continuam funcionando.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent,
+              event.eventClass == AEEventClass(kCoreEventClass),
+              event.eventID == AEEventID(kAEQuitApplication),
+              event.attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason)) == nil,
+              let senderPID = event.attributeDescriptor(forKeyword: AEKeyword(keySenderPIDAttr))?.int32Value else {
+            return .terminateNow
+        }
+        let senderName = processName(senderPID) ?? "desconhecido"
+        guard senderName == "linkd" else {
+            logger.info("Encerramento pedido por \(senderName, privacy: .public) (pid \(senderPID, privacy: .public)).")
+            return .terminateNow
+        }
+        logger.info("Pedido de encerramento do linkd recusado: o HollyCorretor fica na barra de menus.")
+        return .terminateCancel
+    }
+
+    private func processName(_ pid: pid_t) -> String? {
+        // O proc_name recusa buffers menores que 2 × MAXCOMLEN.
+        var buffer = [UInt8](repeating: 0, count: 2 * Int(MAXCOMLEN) + 1)
+        let length = proc_name(pid, &buffer, UInt32(buffer.count))
+        guard length > 0 else { return nil }
+        return String(decoding: buffer.prefix(Int(length)), as: UTF8.self)
+    }
+
     // MARK: - Text Handling (Async/Await)
 
-    private func handle(action: CorrectionAction) {
+    /// `targetApp` é o aplicativo com o texto selecionado. Pelo atalho de
+    /// teclado e pelo menu da barra, é o da frente; por um endereço
+    /// `hollycorretor://`, quem abriu o endereço pode estar na frente.
+    private func handle(
+        action: CorrectionAction,
+        targetApp: NSRunningApplication? = NSWorkspace.shared.frontmostApplication
+    ) {
         logger.info("Ação pedida: \(action.title, privacy: .public)")
-        guard !isProcessing else {
-            logger.info("Recusada: já há um processamento em andamento.")
-            revealCurrentOperation()
-            return
+        Task {
+            do throws(ActionStartFailure) {
+                try await beginAction(action, targetApp: targetApp)
+            } catch .busy {
+                logger.info("Recusada: já há um processamento em andamento.")
+                revealCurrentOperation()
+            } catch {
+                logger.error("Ação não iniciada: \(error.title, privacy: .public)")
+                showAlert(title: error.title, message: error.message)
+            }
         }
-        guard checkAccessibilityPermission(prompt: true) else {
-            logger.error("Recusada: sem permissão de Acessibilidade.")
-            showAlert(title: "Permissão necessária", message: "Ative Acessibilidade.")
-            return
-        }
+    }
 
-        let targetApp = NSWorkspace.shared.frontmostApplication
-        let snapshot = ClipboardSnapshot()
+    /// Endereços `hollycorretor://<ação>`. É o caminho que funciona com a Siri
+    /// mesmo sem certificado da Apple: um atalho comum do app Atalhos, chamado
+    /// pelo nome, abre o endereço. O sistema traz o HollyCorretor para a frente
+    /// ao entregar o endereço, então a seleção é procurada no aplicativo que
+    /// estava em uso antes dele.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let url = urls.first else { return }
+        guard let action = CommandURL.action(from: url) else {
+            logger.error("Endereço não reconhecido: \(url.absoluteString, privacy: .private)")
+            showAlert(
+                title: "Ação desconhecida",
+                message: "O endereço não corresponde a nenhuma ação do HollyCorretor. Use, por exemplo, hollycorretor://revisar, reescrever, formalizar, simplificar ou resumir."
+            )
+            return
+        }
+        logger.info("Ação pedida por endereço: \(action.commandName, privacy: .public)")
+        handle(action: action, targetApp: intentTargetApp())
+    }
+
+    /// Ponto de entrada da Siri e do app Atalhos para agir sobre o texto
+    /// selecionado. O resultado segue o mesmo caminho do atalho de teclado:
+    /// aplicação direta com barra de conferência ou prévia antes de substituir.
+    func performFromIntent(
+        _ action: CorrectionAction,
+        customInstruction: String? = nil
+    ) async throws(ActionStartFailure) {
+        logger.info("Ação pedida pela Siri ou pelo Atalhos: \(action.title, privacy: .public)")
+        do throws(ActionStartFailure) {
+            try await beginAction(
+                action,
+                targetApp: intentTargetApp(),
+                customInstruction: customInstruction
+            )
+        } catch .busy {
+            revealCurrentOperation(alertIfNothingVisible: false)
+            throw .busy
+        }
+    }
+
+    /// Captura a seleção do aplicativo de destino e inicia a ação. Comum aos
+    /// atalhos de teclado, ao menu da barra, à Siri e ao app Atalhos.
+    private func beginAction(
+        _ action: CorrectionAction,
+        targetApp: NSRunningApplication?,
+        customInstruction: String? = nil
+    ) async throws(ActionStartFailure) {
+        settlePendingResult()
+        guard !isProcessing else { throw .busy }
+        guard checkAccessibilityPermission(prompt: true) else { throw .accessibilityDenied }
 
         // Manda o sistema carregar o modelo agora, em paralelo com a captura da
         // seleção, em vez de só quando o texto já estiver em mãos.
         if action != .markdown { processor.prewarm() }
 
-        if let selection = selectedTextViaAccessibility() {
+        isProcessing = true
+        updateStatusIcon(processing: true)
+
+        let selection: CapturedSelection
+        let snapshot: ClipboardSnapshot?
+        do {
+            (selection, snapshot) = try await captureSelection(in: targetApp)
+        } catch {
+            isProcessing = false
+            updateStatusIcon(processing: false)
+            throw error
+        }
+        start(
+            action,
+            selection: selection,
+            targetApp: targetApp,
+            clipboardSnapshot: snapshot,
+            customInstruction: customInstruction
+        )
+    }
+
+    /// Lê a seleção pela Acessibilidade e, se o editor não a publicar, copia
+    /// com ⌘C. Só o segundo caminho toca a área de transferência e, por isso,
+    /// só ele devolve a cópia de segurança do conteúdo anterior.
+    private func captureSelection(
+        in targetApp: NSRunningApplication?
+    ) async throws(ActionStartFailure) -> (CapturedSelection, ClipboardSnapshot?) {
+        if let selection = selectedTextViaAccessibility(in: targetApp) {
             logger.info("Seleção lida pela Acessibilidade: \(selection.text.count, privacy: .public) caracteres.")
-            isProcessing = true
-            updateStatusIcon(processing: true)
-            start(action, selection: selection, targetApp: targetApp, clipboardSnapshot: snapshot)
-            return
+            return (selection, nil)
+        }
+
+        // O ⌘C vai para o aplicativo da frente. Pela Siri ou pelo Atalhos, o
+        // editor pode estar atrás deles e precisa voltar primeiro.
+        if let targetApp, !targetApp.isActive {
+            returnFocus(to: targetApp)
+            guard await waitForAppActive(targetApp, maxAttempts: 30) else {
+                throw .targetUnavailable
+            }
+            if let selection = selectedTextViaAccessibility(in: targetApp) {
+                logger.info("Seleção lida pela Acessibilidade após reativar o editor.")
+                return (selection, nil)
+            }
         }
 
         // A partir daqui é preciso simular ⌘C. Com a entrada protegida ativa o
         // sistema descarta eventos sintéticos sem avisar, e o app pareceria
         // travado esperando um clipboard que nunca muda.
-        guard !IsSecureEventInputEnabled() else {
-            showAlert(
-                title: "Entrada protegida ativa",
-                message: "Um campo seguro (como o de uma senha) está em foco. Saia dele e tente novamente."
-            )
-            return
-        }
+        guard !IsSecureEventInputEnabled() else { throw .secureInput }
 
         let fallbackElement = focusedAccessibilityElement(in: targetApp)
         let fallbackRange = fallbackElement.flatMap { selectedTextRange(of: $0) }
         let fallbackAnchor = fallbackElement.flatMap { selectionRect(of: $0) } ?? cursorAnchor()
 
-        isProcessing = true
-        updateStatusIcon(processing: true)
+        let snapshot = ClipboardSnapshot()
+        await waitForModifiersReleased()
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        let baseline = pasteboard.changeCount
 
-        Task {
-            await waitForModifiersReleased()
-            let pasteboard = NSPasteboard.general
-            pasteboard.clearContents()
-            let baseline = pasteboard.changeCount
+        sendKeyboardShortcut(keyCode: CGKeyCode(kVK_ANSI_C), flags: .maskCommand)
+        let clipboardChanged = await waitForClipboardChange(
+            pasteboard: pasteboard,
+            baseline: baseline,
+            maxAttempts: 15
+        )
 
-            sendKeyboardShortcut(keyCode: CGKeyCode(kVK_ANSI_C), flags: .maskCommand)
-            let clipboardChanged = await waitForClipboardChange(
-                pasteboard: pasteboard,
-                baseline: baseline,
-                maxAttempts: 15
-            )
-
-            logger.info("Área de transferência mudou após ⌘C: \(clipboardChanged, privacy: .public)")
-            if clipboardChanged, let selectedText = extractPlainText(from: pasteboard) {
-                let selection = CapturedSelection(
-                    text: selectedText,
-                    element: fallbackElement,
-                    range: fallbackRange,
-                    anchor: fallbackAnchor,
-                    clipboardChangeCount: pasteboard.changeCount
-                )
-                start(action, selection: selection, targetApp: targetApp, clipboardSnapshot: snapshot)
-                return
-            }
-
-            isProcessing = false
-            updateStatusIcon(processing: false)
+        logger.info("Área de transferência mudou após ⌘C: \(clipboardChanged, privacy: .public)")
+        guard clipboardChanged, let selectedText = extractPlainText(from: pasteboard) else {
             snapshot.restoreIfUnchanged(since: pasteboard.changeCount)
-            showAlert(
-                title: "Nenhum texto selecionado",
-                message: "Selecione um texto e tente novamente. O HollyCorretor não usa “Selecionar tudo” automaticamente para evitar alterações indesejadas."
-            )
+            throw .noSelection
         }
+        let selection = CapturedSelection(
+            text: selectedText,
+            element: fallbackElement,
+            range: fallbackRange,
+            anchor: fallbackAnchor,
+            clipboardChangeCount: pasteboard.changeCount
+        )
+        return (selection, snapshot)
+    }
+
+    /// Aplicativo cuja seleção a Siri ou o Atalhos devem usar: o da frente,
+    /// a menos que seja um deles mesmos (ou o próprio HollyCorretor).
+    private func intentTargetApp() -> NSRunningApplication? {
+        if let front = NSWorkspace.shared.frontmostApplication, isExternalApp(front) {
+            return front
+        }
+        if let last = lastExternalApp, !last.isTerminated {
+            return last
+        }
+        return nil
+    }
+
+    /// A Siri roda como agente, sem ícone no Dock, e por isso já fica de fora
+    /// pela política de ativação. O app Atalhos é um aplicativo comum.
+    private func isExternalApp(_ app: NSRunningApplication) -> Bool {
+        guard app.activationPolicy == .regular, !app.isTerminated else { return false }
+        let ignored: Set<String> = [
+            Bundle.main.bundleIdentifier ?? "com.hollycorretor.app",
+            "com.apple.shortcuts"
+        ]
+        return !ignored.contains(app.bundleIdentifier ?? "")
     }
 
     private func waitForModifiersReleased() async {
@@ -546,8 +759,12 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         return false
     }
 
-    private func selectedTextViaAccessibility() -> CapturedSelection? {
-        guard let element = focusedAccessibilityElement(),
+    /// Com o aplicativo de destino na frente, o elemento com foco do sistema é
+    /// o dele. Atrás da Siri ou do Atalhos, é preciso perguntar ao próprio
+    /// aplicativo, que guarda o campo com foco mesmo em segundo plano.
+    private func selectedTextViaAccessibility(in app: NSRunningApplication? = nil) -> CapturedSelection? {
+        let owner = app?.isActive == false ? app : nil
+        guard let element = focusedAccessibilityElement(in: owner),
               let text = selectedText(of: element),
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
@@ -561,14 +778,22 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         )
     }
 
-    private func focusedAccessibilityElement(in app: NSRunningApplication? = nil) -> AXUIElement? {
+    /// `timeout` limita a espera por aplicativos que não respondem; ele vale
+    /// para a consulta e para o elemento devolvido.
+    private func focusedAccessibilityElement(
+        in app: NSRunningApplication? = nil,
+        timeout: Float? = nil
+    ) -> AXUIElement? {
         let root = app.map { AXUIElementCreateApplication($0.processIdentifier) }
             ?? AXUIElementCreateSystemWide()
+        if let timeout, app != nil { AXUIElementSetMessagingTimeout(root, timeout) }
         var focusedElement: AnyObject?
         guard AXUIElementCopyAttributeValue(root, kAXFocusedUIElementAttribute as CFString, &focusedElement) == .success,
               let focused = focusedElement,
               CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
-        return (focused as! AXUIElement)
+        let element = focused as! AXUIElement
+        if let timeout { AXUIElementSetMessagingTimeout(element, timeout) }
+        return element
     }
 
     /// Um Serviço não informa diretamente qual aplicativo o chamou. Na maior
@@ -593,8 +818,13 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
 
         var best: LocatedServiceSelection?
         for app in apps {
-            guard let element = focusedAccessibilityElement(in: app),
-                  selectedText(of: element) == text else { continue }
+            // Um aplicativo travado responderia só depois do prazo padrão da
+            // Acessibilidade, de vários segundos, e congelaria o clique
+            // direito. Na sondagem basta um prazo curto; o elemento escolhido
+            // volta ao prazo padrão antes de ser usado para escrever.
+            guard let element = focusedAccessibilityElement(in: app, timeout: 0.4) else { continue }
+            guard selectedText(of: element) == text else { continue }
+            AXUIElementSetMessagingTimeout(element, 0)
 
             let anchor = selectionRect(of: element) ?? cursorAnchor()
             let distance = distance(from: pointer, to: anchor)
@@ -611,6 +841,8 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             if best == nil || distance < best!.distanceFromPointer {
                 best = match
             }
+            // O ponteiro sobre a própria seleção não admite candidato melhor.
+            if distance == 0 { break }
         }
         return best
     }
@@ -793,7 +1025,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
 
     private func saveAsMarkdownFile(
         _ text: String,
-        clipboardSnapshot: ClipboardSnapshot,
+        clipboardSnapshot: ClipboardSnapshot?,
         clipboardChangeCount: Int?
     ) {
         let formatter = DateFormatter()
@@ -813,7 +1045,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             defer {
                 self.isProcessing = false
                 self.updateStatusIcon(processing: false)
-                clipboardSnapshot.restoreIfUnchanged(
+                clipboardSnapshot?.restoreIfUnchanged(
                     since: clipboardChangeCount
                 )
             }
@@ -857,7 +1089,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         _ selection: CapturedSelection,
         action: CorrectionAction,
         targetApp: NSRunningApplication?,
-        clipboardSnapshot: ClipboardSnapshot,
+        clipboardSnapshot: ClipboardSnapshot?,
         customInstruction: String? = nil
     ) {
         showGenerationPanel(
@@ -932,14 +1164,14 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                 self.closeGenerationPanel()
                 self.isProcessing = false
                 self.updateStatusIcon(processing: false)
-                clipboardSnapshot.restoreIfUnchanged(since: selection.clipboardChangeCount)
+                clipboardSnapshot?.restoreIfUnchanged(since: selection.clipboardChangeCount)
             } catch {
                 guard !Task.isCancelled else { return }
                 self.currentTask = nil
                 self.closeGenerationPanel()
                 self.updateStatusIcon(processing: false)
                 self.isProcessing = false
-                clipboardSnapshot.restoreIfUnchanged(
+                clipboardSnapshot?.restoreIfUnchanged(
                     since: selection.clipboardChangeCount
                 )
                 self.logger.error("Falha ao processar: \(error.localizedDescription, privacy: .public)")
@@ -973,12 +1205,12 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
 
     private func cancelCurrentOperation(
         selection: CapturedSelection,
-        clipboardSnapshot: ClipboardSnapshot
+        clipboardSnapshot: ClipboardSnapshot?
     ) {
         currentTask?.cancel()
         currentTask = nil
         closeGenerationPanel()
-        clipboardSnapshot.restoreIfUnchanged(since: selection.clipboardChangeCount)
+        clipboardSnapshot?.restoreIfUnchanged(since: selection.clipboardChangeCount)
         isProcessing = false
         updateStatusIcon(processing: false)
     }
@@ -1014,7 +1246,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         revisedText: String,
         action: CorrectionAction,
         targetApp: NSRunningApplication?,
-        clipboardSnapshot: ClipboardSnapshot
+        clipboardSnapshot: ClipboardSnapshot?
     ) {
         closeResultPanel()
         let revisedSelection = CapturedSelection(
@@ -1113,28 +1345,61 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         panel.position(near: originalSelection.anchor, preferAbove: true, gap: 6)
         panel.orderFrontRegardless()
         resultPanelWindow = panel
+
+        // O documento já mostra o texto que vale: a revisão ou, se a pessoa
+        // alternou para o original, o original. Confirmar implicitamente não
+        // escreve nada, não move o cursor e não tira o foco de onde estiver —
+        // a pessoa pode ter acabado de fazer outra seleção.
+        pendingResultConfirmation = { [weak self] in
+            guard let self else { return }
+            self.closeResultPanel()
+            let keptRevision = !showingOriginal
+            if keptRevision, AppPreferences.shouldSaveHistory {
+                HistoryStore.shared.add(actionTitle: action.title, processedText: revisedText)
+            }
+            self.finishOperation(
+                keeping: keptRevision ? revisedSelection : originalSelection,
+                text: keptRevision ? revisedText : originalSelection.text,
+                targetApp: targetApp,
+                clipboardSnapshot: clipboardSnapshot,
+                playFeedback: false,
+                restoringFocus: false
+            )
+        }
     }
 
     private func closeResultPanel() {
         resultPanelWindow?.orderOut(nil)
         resultPanelWindow = nil
+        pendingResultConfirmation = nil
+    }
+
+    /// Uma nova ação enquanto a barra de conferência espera o OK conta como
+    /// confirmação. Antes, a barra bloqueava qualquer outra correção até ser
+    /// fechada, mesmo com o resultado já aplicado no documento.
+    private func settlePendingResult() {
+        guard let confirm = pendingResultConfirmation else { return }
+        logger.info("Nova ação com resultado aguardando OK; mantendo o texto do documento.")
+        confirm()
     }
 
     private func finishOperation(
         keeping selection: CapturedSelection,
         text: String,
         targetApp: NSRunningApplication?,
-        clipboardSnapshot: ClipboardSnapshot,
-        playFeedback: Bool
+        clipboardSnapshot: ClipboardSnapshot?,
+        playFeedback: Bool,
+        restoringFocus: Bool = true
     ) {
-        if let element = selection.element,
+        if restoringFocus,
+           let element = selection.element,
            let range = rangeAfterReplacing(selection, with: text) {
             let caret = CFRange(location: range.location + range.length, length: 0)
             _ = setSelectedTextRange(caret, of: element)
         }
-        clipboardSnapshot.restoreIfUnchanged(since: selection.clipboardChangeCount)
+        clipboardSnapshot?.restoreIfUnchanged(since: selection.clipboardChangeCount)
         isProcessing = false
-        returnFocus(to: targetApp)
+        if restoringFocus { returnFocus(to: targetApp) }
         if playFeedback { showSuccessFeedback(playPop: false) }
         else { updateStatusIcon(processing: false) }
     }
@@ -1144,7 +1409,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         selection: CapturedSelection,
         action: CorrectionAction,
         targetApp: NSRunningApplication?,
-        clipboardSnapshot: ClipboardSnapshot
+        clipboardSnapshot: ClipboardSnapshot?
     ) {
         let panel = makePreviewPanel()
         let previewController = PreviewViewController(
@@ -1158,20 +1423,25 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                     HistoryStore.shared.add(actionTitle: action.title, processedText: finalText)
                 }
                 Task {
-                    await self?.injectText(
+                    guard let self else { return }
+                    let applied = await self.injectText(
                         finalText,
                         selection: selection,
                         targetApp: targetApp,
                         clipboardSnapshot: clipboardSnapshot
                     )
-                    self?.isProcessing = false
+                    self.isProcessing = false
+                    // Sem isto, uma colagem recusada deixava o ícone da barra
+                    // preso em "processando" até o menu ser aberto.
+                    if applied { self.showSuccessFeedback(playPop: false) }
+                    else { self.updateStatusIcon(processing: false) }
                 }
             },
             onCancel: { [weak self, weak panel] in
                 panel?.onClose = nil
                 self?.previewPanel = nil
                 panel?.close()
-                clipboardSnapshot.restoreIfUnchanged(since: selection.clipboardChangeCount)
+                clipboardSnapshot?.restoreIfUnchanged(since: selection.clipboardChangeCount)
                 self?.isProcessing = false
                 self?.updateStatusIcon(processing: false)
             },
@@ -1192,7 +1462,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             self?.previewPanel = nil
             self?.isProcessing = false
             self?.updateStatusIcon(processing: false)
-            clipboardSnapshot.restoreIfUnchanged(since: selection.clipboardChangeCount)
+            clipboardSnapshot?.restoreIfUnchanged(since: selection.clipboardChangeCount)
         }
         previewPanel = panel
         NSApp.activate(ignoringOtherApps: true)
@@ -1203,8 +1473,9 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     /// Uma segunda tentativa não deve virar apenas o alerta sonoro padrão do
     /// sistema. Se a prévia ainda existe, ela volta para a frente; nos poucos
     /// instantes em que o resultado está sendo aplicado, uma mensagem explica o
-    /// que está acontecendo.
-    private func revealCurrentOperation() {
+    /// que está acontecendo. A Siri recebe a explicação como erro, por isso
+    /// pode dispensar o alerta.
+    private func revealCurrentOperation(alertIfNothingVisible: Bool = true) {
         if let panel = resultPanelWindow {
             panel.orderFrontRegardless()
             return
@@ -1223,39 +1494,43 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             panel.makeKeyAndOrderFront(nil)
             return
         }
+        guard alertIfNothingVisible else { return }
         showAlert(
-            title: "Uma correção já está em andamento",
-            message: "Aguarde a aplicação do resultado e tente novamente."
+            title: ActionStartFailure.busy.title,
+            message: ActionStartFailure.busy.message
         )
     }
 
+    /// Devolve `true` quando o resultado chegou ao documento. Nos demais casos
+    /// um alerta já explicou o que houve e o resultado pode estar na área de
+    /// transferência para colar à mão.
     private func injectText(
         _ finalText: String,
         selection: CapturedSelection,
         targetApp: NSRunningApplication?,
-        clipboardSnapshot: ClipboardSnapshot
-    ) async {
+        clipboardSnapshot: ClipboardSnapshot?
+    ) async -> Bool {
         guard let targetApp else {
-            clipboardSnapshot.restoreIfUnchanged(
+            clipboardSnapshot?.restoreIfUnchanged(
                 since: selection.clipboardChangeCount
             )
             showAlert(
                 title: "Aplicativo de destino não encontrado",
                 message: "Copie o resultado pela prévia e cole-o manualmente."
             )
-            return
+            return false
         }
 
         NSApp.yieldActivation(to: targetApp)
         targetApp.activate()
 
         guard await waitForAppActive(targetApp, maxAttempts: 30) else {
-            clipboardSnapshot.restoreIfUnchanged(since: selection.clipboardChangeCount)
+            clipboardSnapshot?.restoreIfUnchanged(since: selection.clipboardChangeCount)
             showAlert(
                 title: "Não foi possível voltar ao aplicativo anterior",
                 message: "O texto não foi colado. Tente usar o botão “Copiar” na prévia."
             )
-            return
+            return false
         }
 
         // Caminho preferido: escrever direto no campo pela Acessibilidade. Não
@@ -1263,9 +1538,8 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         // espera nenhuma.
         if replaceSelection(in: selection, expecting: selection.text, with: finalText) {
             logger.info("Resultado aplicado pela Acessibilidade.")
-            clipboardSnapshot.restoreIfUnchanged(since: selection.clipboardChangeCount)
-            showSuccessFeedback(playPop: false)
-            return
+            clipboardSnapshot?.restoreIfUnchanged(since: selection.clipboardChangeCount)
+            return true
         }
 
         guard prepareSelectionForPaste(selection) else {
@@ -1276,28 +1550,33 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                 title: "Resultado copiado",
                 message: "O editor desfez a seleção e o HollyCorretor não colou no cursor para evitar duplicar o texto. Use ⌘V para colar o resultado no local desejado."
             )
-            return
+            return false
         }
 
         // Retaguarda: área de transferência + ⌘V.
         guard !IsSecureEventInputEnabled() else {
-            clipboardSnapshot.restoreIfUnchanged(since: selection.clipboardChangeCount)
+            clipboardSnapshot?.restoreIfUnchanged(since: selection.clipboardChangeCount)
             showAlert(
                 title: "Entrada protegida ativa",
                 message: "Um campo seguro está em foco e impede a colagem. Use o botão “Copiar” na prévia."
             )
-            return
+            return false
         }
 
+        // Quando a seleção foi lida pela Acessibilidade, a área de transferência
+        // ainda não foi tocada. A cópia de segurança é feita só agora, e não no
+        // início da ação: assim o que a pessoa copiou durante o processamento é
+        // o que volta depois da colagem, em vez de um conteúdo mais antigo.
+        let backup = clipboardSnapshot ?? ClipboardSnapshot()
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         guard pasteboard.setString(finalText, forType: .string) else {
-            clipboardSnapshot.restore()
+            backup.restore()
             showAlert(
                 title: "Falha ao preparar o texto",
                 message: "Não foi possível usar a área de transferência."
             )
-            return
+            return false
         }
         let injectionChangeCount = pasteboard.changeCount
 
@@ -1306,13 +1585,18 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                 title: "Resultado copiado",
                 message: "O foco do editor mudou antes da colagem. Use ⌘V para colar o resultado no local desejado."
             )
-            return
+            return false
         }
         sendKeyboardShortcut(keyCode: CGKeyCode(kVK_ANSI_V), flags: .maskCommand)
-        showSuccessFeedback(playPop: false)
 
-        try? await Task.sleep(nanoseconds: 2_000_000_000)
-        clipboardSnapshot.restoreIfUnchanged(since: injectionChangeCount)
+        // O editor lê a área de transferência depois de receber o ⌘V. A
+        // restauração espera por isso sem prender a operação: antes, o app
+        // ficava ocupado por mais dois segundos e recusava o próximo atalho.
+        Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            backup.restoreIfUnchanged(since: injectionChangeCount)
+        }
+        return true
     }
 
     private func prepareSelectionForPaste(_ selection: CapturedSelection) -> Bool {
@@ -1351,7 +1635,10 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         statusItem?.button?.image = checkIcon
         if playPop { NSSound(named: .init("Pop"))?.play() }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+        // Uma nova operação pode ter começado nesse intervalo; o ícone dela não
+        // pode voltar ao estado de repouso no meio do processamento.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, !self.isProcessing else { return }
             self.updateStatusIcon(processing: false)
         }
     }
@@ -1394,7 +1681,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     /// qualquer texto selecionado, em qualquer aplicativo. É o que a ferramenta
     /// do sistema não consegue fazer fora dos campos de texto nativos.
     @discardableResult
-    private func startSelectionWatcherIfEnabled() -> Bool {
+    private func startSelectionWatcherIfEnabled(alertOnFailure: Bool = true) -> Bool {
         guard AppPreferences.showsSelectionPill else {
             stopSelectionWatcher()
             return false
@@ -1439,7 +1726,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         selectionWatcher = watcher
 
         let started = watcher.start()
-        if !started {
+        if !started, alertOnFailure {
             showAlert(
                 title: "Não foi possível ligar o botão flutuante",
                 message: "O macOS recusou o monitoramento de eventos. Confirme a permissão em Ajustes do Sistema › Privacidade e Segurança › Acessibilidade e reabra o HollyCorretor."
@@ -1493,6 +1780,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             logger.error("Pastilha clicada sem seleção guardada.")
             return
         }
+        settlePendingResult()
         guard !isProcessing else {
             logger.info("Pastilha clicada durante outro processamento.")
             revealCurrentOperation()
@@ -1548,7 +1836,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                     action,
                     selection: selection,
                     targetApp: targetApp,
-                    clipboardSnapshot: ClipboardSnapshot(),
+                    clipboardSnapshot: nil,
                     customInstruction: instruction
                 )
             },
@@ -1640,7 +1928,27 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         alert.messageText = title
         alert.informativeText = message
         alert.addButton(withTitle: "OK")
+        // Pela Siri ou por um endereço, o editor pode já ter recuperado a
+        // frente quando o alerta aparece. Sem subir o nível, ele abria atrás
+        // das outras janelas e, como `runModal` bloqueia, o app parecia travado.
+        alert.window.level = .modalPanel
         alert.runModal()
+    }
+}
+
+// Usado por scripts/build.sh: grava os metadados das App Intents e sai, sem
+// abrir a interface.
+if let index = CommandLine.arguments.firstIndex(of: AppIntentsMetadata.commandLineFlag) {
+    guard CommandLine.arguments.indices.contains(index + 1) else {
+        FileHandle.standardError.write(Data("Uso: HollyCorretor \(AppIntentsMetadata.commandLineFlag) <pasta>\n".utf8))
+        exit(64)
+    }
+    do {
+        try AppIntentsMetadata.write(to: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("Falha ao gravar os metadados: \(error)\n".utf8))
+        exit(1)
     }
 }
 

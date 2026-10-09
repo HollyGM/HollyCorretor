@@ -1,3 +1,4 @@
+import Foundation
 import HollyCore
 
 struct CheckFailure: Error, CustomStringConvertible {
@@ -20,6 +21,7 @@ enum HollyCoreChecks {
         try checkProcessingBudgets()
         try checkOutputValidation()
         try checkLongTextChangeCounter()
+        try checkCommandURLs()
         print("Todos os testes do HollyCore passaram.")
     }
 
@@ -399,5 +401,43 @@ enum HollyCoreChecks {
             ) == unbalanced,
             "A divisão com piso de preenchimento alterou o texto."
         )
+    }
+
+    private static func checkCommandURLs() throws {
+        for action in CorrectionAction.allCases {
+            try require(
+                CommandURL.action(from: CommandURL.url(for: action)) == action,
+                "O endereço de \(action.commandName) não leva de volta à mesma ação."
+            )
+        }
+
+        let accepted: [(String, CorrectionAction)] = [
+            ("hollycorretor://revisar", .correct),
+            ("HOLLYCORRETOR://Revisar", .correct),
+            ("hollycorretor://corrigir", .correct),
+            ("hollycorretor:reescrever", .rewrite),
+            ("hollycorretor://amig%C3%A1vel", .friendly),
+            ("hollycorretor://pontos-principais", .keyPoints),
+            ("hollycorretor://resumo/", .summarize)
+        ]
+        for (address, expected) in accepted {
+            try require(
+                URL(string: address).flatMap(CommandURL.action(from:)) == expected,
+                "O endereço \(address) deveria acionar \(expected.commandName)."
+            )
+        }
+
+        let rejected = [
+            "hollycorretor://",
+            "hollycorretor://apagar-tudo",
+            "https://revisar",
+            "zapcorrector://revisar"
+        ]
+        for address in rejected {
+            try require(
+                URL(string: address).flatMap(CommandURL.action(from:)) == nil,
+                "O endereço \(address) não deveria acionar nenhuma ação."
+            )
+        }
     }
 }
