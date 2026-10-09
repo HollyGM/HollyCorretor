@@ -16,7 +16,7 @@
 
 > **Parte da suíte Holly**  
 > Ferramentas local-first para texto, documentos e mídia, com privacidade por padrão e segurança verificável.  
-> [HollyOCR](https://github.com/HollyGM/HollyOCR) · [HollyTranscrição](https://github.com/HollyGM/HollyTranscricao) · [HollyOptimizer](https://github.com/HollyGM/HollyOptimizer)
+> [HollyOCR](https://github.com/HollyGM/HollyOCR) · [HollyTranscrição](https://github.com/HollyGM/HollyTranscricao) · [HollyOptimizer](https://github.com/HollyGM/HollyOptimizer) · [Texto em Áudio](https://github.com/HollyGM/HollyTextoEmAudio) (voz online)
 
 Aplicativo de barra de menus para macOS que corrige, reescreve, formaliza,
 simplifica ou resume o texto selecionado. O processamento usa o modelo local da
