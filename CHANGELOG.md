@@ -2,6 +2,23 @@
 
 As alterações relevantes do HollyCorretor são registradas neste arquivo.
 
+## Não publicado
+
+### Correções
+
+- Aplica o resultado em editores que não publicam `AXSelectedTextRange` — os
+  baseados no Chromium, e com eles os aplicativos feitos em Electron. Nesses
+  editores `restoreCapturedSelection` não tinha intervalo para conferir, e
+  tanto a escrita pela Acessibilidade quanto a colagem de retaguarda eram
+  recusadas: a pessoa recebia "o editor desfez a seleção" e precisava colar à
+  mão. A nova retaguarda repete o ⌘C e compara com o texto capturado; vindo o
+  mesmo texto, a seleção está provadamente intacta e o ⌘V substitui exatamente
+  o trecho que acabou de ser lido. A conferência devolve a área de transferência
+  ao estado anterior e não roda com entrada protegida ativa.
+- A decisão de segurança dessa comparação saiu para `HollyCore` como
+  `SelectionGuard.holds(captured:recopied:)`, função pura e coberta por testes
+  — antes, a parte mais arriscada do app era a única sem verificação.
+
 ## 0.4.0 — 2026-10-09
 
 ### Siri e app Atalhos

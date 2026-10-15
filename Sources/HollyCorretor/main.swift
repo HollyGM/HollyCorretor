@@ -709,6 +709,9 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             snapshot.restoreIfUnchanged(since: pasteboard.changeCount)
             throw .noSelection
         }
+        logger.info(
+            "Seleção lida pelo ⌘C: \(selectedText.count, privacy: .public) caracteres; intervalo=\(fallbackRange != nil, privacy: .public)."
+        )
         let selection = CapturedSelection(
             text: selectedText,
             element: fallbackElement,
@@ -1107,7 +1110,9 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         currentTask = Task { [weak self] in
             guard let self else { return }
             do {
-                self.logger.info("Iniciando geração para \(action.title, privacy: .public)")
+                self.logger.info(
+                    "Iniciando geração para \(action.title, privacy: .public): entrada de \(selection.text.count, privacy: .public) caracteres."
+                )
                 var finalText = ""
                 for try await update in self.processor.stream(
                     selection.text,
@@ -1227,7 +1232,11 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         targetApp: NSRunningApplication?
     ) async -> Bool {
         guard !Task.isCancelled else { return false }
-        if revisedText == selection.text { return true }
+        if revisedText == selection.text {
+            // Nada a aplicar, e é isso que o painel mostra como "0 alterações".
+            logger.info("O modelo devolveu o texto sem alteração; nada a aplicar.")
+            return true
+        }
         guard let targetApp else { return false }
 
         returnFocus(to: targetApp)
@@ -1542,7 +1551,8 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             return true
         }
 
-        guard prepareSelectionForPaste(selection) else {
+        let readiness = await prepareSelectionForPaste(selection)
+        guard readiness != .no else {
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
             pasteboard.setString(finalText, forType: .string)
@@ -1580,7 +1590,13 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         }
         let injectionChangeCount = pasteboard.changeCount
 
-        guard targetApp.isActive, capturedElementIsFocused(selection) else {
+        // A identidade do elemento de Acessibilidade não se mantém entre
+        // chamadas em editores do Chromium, então ela só vale como conferência
+        // quando foi ela mesma que autorizou a colagem. Na autorização por
+        // releitura, a conferência já foi feita: o ⌘C de agora há pouco devolveu
+        // o mesmo texto, e o ⌘V substitui exatamente aquela seleção.
+        let focoConfere = readiness == .byRecopy || capturedElementIsFocused(selection)
+        guard targetApp.isActive, focoConfere else {
             showAlert(
                 title: "Resultado copiado",
                 message: "O foco do editor mudou antes da colagem. Use ⌘V para colar o resultado no local desejado."
@@ -1588,6 +1604,9 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             return false
         }
         sendKeyboardShortcut(keyCode: CGKeyCode(kVK_ANSI_V), flags: .maskCommand)
+        logger.info(
+            "Resultado colado com ⌘V: \(finalText.count, privacy: .public) caracteres; autorizado por \(readiness == .byRecopy ? "releitura" : "intervalo", privacy: .public)."
+        )
 
         // O editor lê a área de transferência depois de receber o ⌘V. A
         // restauração espera por isso sem prender a operação: antes, o app
@@ -1599,20 +1618,77 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         return true
     }
 
-    private func prepareSelectionForPaste(_ selection: CapturedSelection) -> Bool {
-        guard let element = selection.element else { return false }
-        if !capturedElementIsFocused(selection) {
-            guard AXUIElementSetAttributeValue(
-                element,
-                kAXFocusedAttribute as CFString,
-                kCFBooleanTrue
-            ) == .success else { return false }
+    /// Como a colagem foi autorizada, porque disso depende o que ainda vale
+    /// conferir antes do ⌘V.
+    private enum PasteReadiness {
+        /// O intervalo foi reposicionado e conferido pela Acessibilidade.
+        case byRange
+        /// O editor não publica o intervalo; a seleção foi conferida relendo-a.
+        case byRecopy
+        case no
+    }
+
+    private func prepareSelectionForPaste(_ selection: CapturedSelection) async -> PasteReadiness {
+        if let element = selection.element {
+            if !capturedElementIsFocused(selection) {
+                _ = AXUIElementSetAttributeValue(
+                    element,
+                    kAXFocusedAttribute as CFString,
+                    kCFBooleanTrue
+                )
+            }
+            // ⌘V vai para o campo com foco, mesmo quando o intervalo foi
+            // alterado com sucesso em outro campo do mesmo aplicativo.
+            if capturedElementIsFocused(selection),
+               restoreCapturedSelection(selection, expecting: selection.text),
+               capturedElementIsFocused(selection) {
+                return .byRange
+            }
         }
-        // ⌘V vai para o campo com foco, mesmo quando o intervalo foi alterado
-        // com sucesso em outro campo do mesmo aplicativo.
-        guard capturedElementIsFocused(selection),
-              restoreCapturedSelection(selection, expecting: selection.text) else { return false }
-        return capturedElementIsFocused(selection)
+
+        // Retaguarda para os editores que não publicam o intervalo.
+        return await selectionStillHolds(selection) ? .byRecopy : .no
+    }
+
+    /// Confere a seleção relendo-a, para os editores em que
+    /// `restoreCapturedSelection` não tem como trabalhar: os baseados no
+    /// Chromium não publicam `AXSelectedTextRange`, e sem o intervalo não há o
+    /// que conferir.
+    ///
+    /// Repetir o ⌘C responde à mesma pergunta por outro caminho. Vindo o mesmo
+    /// texto, a seleção continua onde estava — e o ⌘V seguinte substitui
+    /// exatamente o trecho que este ⌘C acabou de ler, que é a garantia de não
+    /// escrever em outra ocorrência do mesmo texto.
+    private func selectionStillHolds(_ selection: CapturedSelection) async -> Bool {
+        // Sem poder simular teclas não há releitura possível.
+        guard !IsSecureEventInputEnabled() else { return false }
+
+        let pasteboard = NSPasteboard.general
+        let backup = ClipboardSnapshot()
+
+        await waitForModifiersReleased()
+        pasteboard.clearContents()
+        let baseline = pasteboard.changeCount
+
+        sendKeyboardShortcut(keyCode: CGKeyCode(kVK_ANSI_C), flags: .maskCommand)
+        let mudou = await waitForClipboardChange(
+            pasteboard: pasteboard,
+            baseline: baseline,
+            maxAttempts: 15
+        )
+        let relido = mudou ? extractPlainText(from: pasteboard) : nil
+
+        // A releitura é só uma conferência: a área de transferência volta ao que
+        // era, e quem escreve o texto final é o injectText.
+        backup.restore()
+
+        guard let relido else {
+            logger.info("Reconferência por cópia: o editor não devolveu texto.")
+            return false
+        }
+        let confere = SelectionGuard.holds(captured: selection.text, recopied: relido)
+        logger.info("Reconferência por cópia: \(confere, privacy: .public)")
+        return confere
     }
 
     private func waitForAppActive(_ app: NSRunningApplication, maxAttempts: Int) async -> Bool {

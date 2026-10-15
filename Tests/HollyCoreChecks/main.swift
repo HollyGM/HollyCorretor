@@ -22,7 +22,41 @@ enum HollyCoreChecks {
         try checkOutputValidation()
         try checkLongTextChangeCounter()
         try checkCommandURLs()
+        try checkSelectionGuard()
         print("Todos os testes do HollyCore passaram.")
+    }
+
+    private static func checkSelectionGuard() throws {
+        let texto = "nós vai no forum amanha"
+
+        try require(
+            SelectionGuard.holds(captured: texto, recopied: texto),
+            "Texto idêntico deveria confirmar a seleção."
+        )
+        try require(
+            SelectionGuard.holds(captured: texto, recopied: texto + "\n"),
+            "A quebra de linha que alguns editores acrescentam ao copiar não deveria invalidar a seleção."
+        )
+        try require(
+            SelectionGuard.holds(captured: "  " + texto + "  ", recopied: texto),
+            "O espaço nas pontas não deveria invalidar a seleção."
+        )
+
+        let naoConferem: [(String, String)] = [
+            (texto, "outro texto qualquer"),
+            (texto, texto + " e mais um pedaço"),
+            (texto, String(texto.dropLast(5))),
+            (texto, ""),
+            ("", texto),
+            ("", ""),
+            (texto, "   ")
+        ]
+        for (capturado, relido) in naoConferem {
+            try require(
+                !SelectionGuard.holds(captured: capturado, recopied: relido),
+                "A seleção não deveria ser confirmada com \(capturado.debugDescription) e \(relido.debugDescription)."
+            )
+        }
     }
 
     private static func require(
