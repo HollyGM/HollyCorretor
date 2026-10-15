@@ -43,6 +43,9 @@ final class SelectionWatcher {
 
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
+    /// A referência que o tap leva como `refcon`, para ser devolvida em
+    /// `stop()`. Ver o porquê em `start()`.
+    private var tapOwner: Unmanaged<SelectionWatcher>?
     private var pending: Task<Void, Never>?
     private var vigil: Task<Void, Never>?
     private let logger = Logger(
@@ -74,29 +77,31 @@ final class SelectionWatcher {
             (1 << CGEventType.rightMouseDown.rawValue) |
             (1 << CGEventType.scrollWheel.rawValue)
 
+        // O tap leva uma referência contada a este objeto. Enquanto o tap
+        // existir, o objeto existe — o callback em C não tem como saber que
+        // quem criou o vigia já o soltou, e um ponteiro solto ali seria acesso
+        // a memória liberada a cada clique do sistema. `stop()` devolve a
+        // referência, e é ele que permite este objeto morrer.
+        let owner = Unmanaged.passRetained(self)
+
         guard let created = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
             options: .listenOnly,
             eventsOfInterest: mask,
             callback: { _, type, event, refcon in
+                // Este callback é uma função em C, chamada por uma fonte do run
+                // loop principal: a thread é a principal, mas não há tarefa nem
+                // executor do Swift em curso. Por isso ele não toca em nada
+                // isolado — tira do evento apenas valores e entrega o resto a
+                // `deliver`, que entra no MainActor pela fila do próprio ator.
                 guard let refcon else { return Unmanaged.passUnretained(event) }
-                let watcher = Unmanaged<SelectionWatcher>
-                    .fromOpaque(refcon)
-                    .takeUnretainedValue()
-                let location = event.location
-
-                // A fonte deste tap é instalada no run loop principal, logo
-                // abaixo, então o callback chega sempre na thread principal e
-                // `assumeIsolated` é legítimo. A pré-condição deixa o invariante
-                // explícito: se alguém mudar onde a fonte é registrada, isto
-                // falha alto em vez de mexer em AppKit fora da thread principal.
-                dispatchPrecondition(condition: .onQueue(.main))
-                MainActor.assumeIsolated { watcher.handle(type, at: location) }
+                SelectionWatcher.deliver(type, at: event.location, from: refcon)
                 return Unmanaged.passUnretained(event)
             },
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
+            userInfo: owner.toOpaque()
         ) else {
+            owner.release()
             logger.error("Não foi possível criar o event tap. Verifique a permissão de Acessibilidade.")
             return false
         }
@@ -107,6 +112,7 @@ final class SelectionWatcher {
 
         tap = created
         source = runLoopSource
+        tapOwner = owner
         logger.info("Vigia de seleção ativo.")
         return true
     }
@@ -125,6 +131,10 @@ final class SelectionWatcher {
         }
         tap = nil
         source = nil
+        // Só depois de o tap estar invalidado e fora do run loop: enquanto ele
+        // estiver de pé, o callback ainda pode chegar e precisa do objeto.
+        tapOwner?.release()
+        tapOwner = nil
         onHide?()
         logger.info("Vigia de seleção desligado.")
     }
@@ -147,6 +157,31 @@ final class SelectionWatcher {
     }
 
     // MARK: - Eventos
+
+    /// Ponte entre o callback em C do event tap e este objeto, que é isolado ao
+    /// MainActor.
+    ///
+    /// Fica fora de todo isolamento de propósito, e por isso não lê nem escreve
+    /// nada do objeto: desembrulha o ponteiro e enfileira o trabalho, que só
+    /// então roda isolado. Era a conferência de isolamento, e não o trabalho,
+    /// que derrubava o app a partir daqui: `MainActor.assumeIsolated` obriga o
+    /// runtime a comparar o executor em curso com o do MainActor e, num callback
+    /// em C, não há executor em curso nenhum para comparar — em 15/10/2026 essa
+    /// comparação travou dentro do próprio runtime
+    /// (`swift_task_isCurrentExecutorWithFlags`), com a thread principal
+    /// correta e tudo. Uma tarefa `@MainActor` não compara nada: ela é
+    /// enfileirada no ator e já acorda isolada.
+    ///
+    /// A tarefa passa a segurar o objeto no instante em que é criada, então o
+    /// vigia não pode morrer entre o clique e o tratamento dele.
+    nonisolated private static func deliver(
+        _ type: CGEventType,
+        at location: CGPoint,
+        from refcon: UnsafeMutableRawPointer
+    ) {
+        let watcher = Unmanaged<SelectionWatcher>.fromOpaque(refcon).takeUnretainedValue()
+        Task { @MainActor in watcher.handle(type, at: location) }
+    }
 
     private func handle(_ type: CGEventType, at location: CGPoint) {
         switch type {
