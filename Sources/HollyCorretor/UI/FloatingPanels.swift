@@ -385,17 +385,24 @@ final class GenerationPanelController: NSViewController {
 final class AppliedResultPanelController: NSViewController {
     private let actionTitle: String
     private let changeCount: Int
-    private let onRevert: () -> Void
-    private let onToggleOriginal: (Bool) -> Bool
-    private let onConfirm: () -> Void
+    private let onRevert: () async -> Void
+    private let onToggleOriginal: (Bool) async -> Bool
+    private let onConfirm: () async -> Void
     private var originalToggle: NSButton!
+    private var revertButton: NSButton!
+    private var confirmButton: NSButton!
+
+    /// Aplicar a troca pode depender de uma colagem, que leva seu tempo. Os
+    /// botões ficam desligados enquanto ela acontece, para que um segundo
+    /// clique não escreva no documento por cima da troca em andamento.
+    private var working = false
 
     init(
         title: String,
         changeCount: Int,
-        onRevert: @escaping () -> Void,
-        onToggleOriginal: @escaping (Bool) -> Bool,
-        onConfirm: @escaping () -> Void
+        onRevert: @escaping () async -> Void,
+        onToggleOriginal: @escaping (Bool) async -> Bool,
+        onConfirm: @escaping () async -> Void
     ) {
         self.actionTitle = title
         self.changeCount = changeCount
@@ -412,6 +419,7 @@ final class AppliedResultPanelController: NSViewController {
         let revert = NSButton(title: "Reverter", target: self, action: #selector(revertAction))
         revert.bezelStyle = .roundRect
         revert.isEnabled = changeCount > 0
+        revertButton = revert
 
         originalToggle = NSButton(
             image: NSImage(
@@ -444,6 +452,7 @@ final class AppliedResultPanelController: NSViewController {
         let ok = NSButton(title: "OK", target: self, action: #selector(confirmAction))
         ok.bezelStyle = .rounded
         ok.keyEquivalent = "\r"
+        confirmButton = ok
 
         let row = NSStackView(views: [revert, originalToggle, NSView(), labels, NSView(), ok])
         row.orientation = .horizontal
@@ -464,18 +473,46 @@ final class AppliedResultPanelController: NSViewController {
         view = background
     }
 
-    @objc private func revertAction() { onRevert() }
-
-    @objc private func toggleOriginalAction() {
-        let showingOriginal = originalToggle.state == .on
-        guard onToggleOriginal(showingOriginal) else {
-            originalToggle.state = showingOriginal ? .off : .on
-            return
+    @objc private func revertAction() {
+        guard !working else { return }
+        setWorking(true)
+        Task { @MainActor in
+            await onRevert()
+            setWorking(false)
         }
-        originalToggle.toolTip = showingOriginal ? "Mostrar texto revisado" : "Mostrar original"
     }
 
-    @objc private func confirmAction() { onConfirm() }
+    @objc private func toggleOriginalAction() {
+        guard !working else { return }
+        let showingOriginal = originalToggle.state == .on
+        setWorking(true)
+        Task { @MainActor in
+            let trocou = await onToggleOriginal(showingOriginal)
+            setWorking(false)
+            guard trocou else {
+                originalToggle.state = showingOriginal ? .off : .on
+                return
+            }
+            originalToggle.toolTip = showingOriginal ? "Mostrar texto revisado" : "Mostrar original"
+        }
+    }
+
+    @objc private func confirmAction() {
+        guard !working else { return }
+        setWorking(true)
+        Task { @MainActor in
+            await onConfirm()
+            setWorking(false)
+        }
+    }
+
+    private func setWorking(_ working: Bool) {
+        self.working = working
+        let interactive = !working && changeCount > 0
+        revertButton?.isEnabled = interactive
+        originalToggle?.isEnabled = interactive
+        confirmButton?.isEnabled = !working
+    }
 }
 
 @MainActor

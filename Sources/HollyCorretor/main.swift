@@ -1134,23 +1134,25 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
 
                 let revisedText = finalText.isEmpty ? selection.text : finalText
                 self.logger.info("Geração concluída: \(finalText.count, privacy: .public) caracteres.")
-                let appliedInline = await self.applyInlineIfPossible(
+                let appliedRoute = await self.applyInlineIfPossible(
                     revisedText,
                     selection: selection,
-                    targetApp: targetApp
+                    targetApp: targetApp,
+                    clipboardSnapshot: clipboardSnapshot
                 )
                 guard !Task.isCancelled else { return }
                 self.currentTask = nil
                 self.closeGenerationPanel()
                 self.updateStatusIcon(processing: false)
 
-                if appliedInline {
+                if let appliedRoute {
                     self.showAppliedResultPanel(
                         originalSelection: selection,
                         revisedText: revisedText,
                         action: action,
                         targetApp: targetApp,
-                        clipboardSnapshot: clipboardSnapshot
+                        clipboardSnapshot: clipboardSnapshot,
+                        route: appliedRoute
                     )
                 } else {
                     self.showFallbackPreview(
@@ -1226,27 +1228,117 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         targetApp.activate()
     }
 
+    /// Por onde o resultado chegou ao documento. O painel de resultado aplicado
+    /// precisa saber: reverter e alternar o original desfazem a aplicação pelo
+    /// mesmo caminho que a fez.
+    private enum AppliedRoute {
+        /// Escrito direto no campo pela Acessibilidade.
+        case acessibilidade
+        /// Colado com ⌘V, com a seleção autorizada pela releitura.
+        case colagem
+    }
+
+    /// Devolve o caminho que aplicou o resultado, ou `nil` quando nenhum pôde
+    /// aplicá-lo com segurança — e aí a prévia entra em cena.
     private func applyInlineIfPossible(
         _ revisedText: String,
         selection: CapturedSelection,
-        targetApp: NSRunningApplication?
-    ) async -> Bool {
-        guard !Task.isCancelled else { return false }
+        targetApp: NSRunningApplication?,
+        clipboardSnapshot: ClipboardSnapshot?
+    ) async -> AppliedRoute? {
+        guard !Task.isCancelled else { return nil }
         if revisedText == selection.text {
             // Nada a aplicar, e é isso que o painel mostra como "0 alterações".
             logger.info("O modelo devolveu o texto sem alteração; nada a aplicar.")
-            return true
+            return .acessibilidade
         }
-        guard let targetApp else { return false }
+        guard let targetApp else { return nil }
 
         returnFocus(to: targetApp)
         guard await waitForAppActive(targetApp, maxAttempts: 30),
-              !Task.isCancelled else { return false }
-        guard replaceSelection(in: selection, expecting: selection.text, with: revisedText) else {
-            logger.info("O editor não permitiu aplicar a revisão diretamente; exibindo a prévia.")
-            return false
+              !Task.isCancelled else { return nil }
+        if replaceSelection(in: selection, expecting: selection.text, with: revisedText) {
+            logger.info("Resultado aplicado no documento pela Acessibilidade.")
+            return .acessibilidade
         }
-        logger.info("Resultado aplicado no documento pela Acessibilidade.")
+
+        // Os editores baseados no Chromium não publicam o intervalo da seleção,
+        // e sem ele a Acessibilidade não tem como escrever no campo. A colagem
+        // ainda pode valer: o `injectText` confere a seleção relendo-a com ⌘C e
+        // só cola com essa autorização. Em silêncio, porque daqui a prévia
+        // ainda é um fim possível. A cópia de segurança vai junto: o ⌘C da
+        // captura já ocupou a área de transferência, e deixar o `injectText`
+        // tirar a dele agora perderia o que a pessoa tinha copiado antes.
+        guard !Task.isCancelled else { return nil }
+        if await injectText(
+            revisedText,
+            selection: selection,
+            targetApp: targetApp,
+            clipboardSnapshot: clipboardSnapshot,
+            silencioso: true
+        ) {
+            logger.info("Resultado aplicado no documento pela colagem autorizada por releitura.")
+            return .colagem
+        }
+
+        // A releitura da conferência deixa na área de transferência o texto
+        // capturado, com um contador novo que a restauração condicional já não
+        // reconhece. Enquanto for esse texto que está lá, devolver o conteúdo
+        // anterior não atropela nada que a pessoa tenha copiado no caminho.
+        if let clipboardSnapshot,
+           let atual = extractPlainText(from: .general),
+           SelectionGuard.holds(captured: selection.text, recopied: atual) {
+            clipboardSnapshot.restore()
+        }
+        logger.info("O editor não permitiu aplicar a revisão diretamente; exibindo a prévia.")
+        return nil
+    }
+
+    /// Troca um texto já escrito no documento por outro, pelo mesmo caminho que
+    /// aplicou o resultado. Onde a Acessibilidade escreve, é ela quem escreve;
+    /// onde a aplicação veio da colagem, resseleciona o trecho que está lá e
+    /// deixa o `injectText` conferi-lo pela releitura antes de colar.
+    private func replaceAppliedText(
+        _ current: String,
+        with next: String,
+        in selection: CapturedSelection,
+        route: AppliedRoute,
+        targetApp: NSRunningApplication?,
+        clipboardSnapshot: ClipboardSnapshot?
+    ) async -> Bool {
+        if replaceSelection(in: selection, expecting: current, with: next) { return true }
+        guard route == .colagem, let targetApp else { return false }
+
+        returnFocus(to: targetApp)
+        guard await waitForAppActive(targetApp, maxAttempts: 30) else { return false }
+        await waitForModifiersReleased()
+        guard selectBackwards(characters: current.count) else { return false }
+
+        let trocou = await injectText(
+            next,
+            selection: selection,
+            targetApp: targetApp,
+            clipboardSnapshot: clipboardSnapshot,
+            silencioso: true
+        )
+        logger.info("Troca por colagem no documento: \(trocou, privacy: .public)")
+        return trocou
+    }
+
+    /// Resseleciona para trás o trecho recém-colado, porque é só com a seleção
+    /// de volta que a releitura tem o que conferir: depois do ⌘V o cursor fica
+    /// no fim do que foi colado, e cada ⇧← anda um caractere.
+    ///
+    /// Isto não escreve nada. Se a seleção não sair exatamente igual ao texto
+    /// esperado — porque a pessoa digitou no meio, por exemplo —, a releitura
+    /// recusa a troca e o documento fica como está.
+    private func selectBackwards(characters count: Int) -> Bool {
+        // Acima disso a rajada de teclas custa mais do que vale; o texto segue
+        // no documento e o aviso explica que o Desfazer do editor resolve.
+        guard count > 0, count <= 2000, !IsSecureEventInputEnabled() else { return false }
+        for _ in 0..<count {
+            sendKeyboardShortcut(keyCode: CGKeyCode(kVK_LeftArrow), flags: .maskShift)
+        }
         return true
     }
 
@@ -1255,7 +1347,8 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         revisedText: String,
         action: CorrectionAction,
         targetApp: NSRunningApplication?,
-        clipboardSnapshot: ClipboardSnapshot?
+        clipboardSnapshot: ClipboardSnapshot?,
+        route: AppliedRoute
     ) {
         closeResultPanel()
         let revisedSelection = CapturedSelection(
@@ -1272,11 +1365,14 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             changeCount: TextChangeCounter.count(from: originalSelection.text, to: revisedText),
             onRevert: { [weak self] in
                 guard let self else { return }
-                if !showingOriginal && !self.replaceSelection(
+                if !showingOriginal, !(await self.replaceAppliedText(
+                    revisedText,
+                    with: originalSelection.text,
                     in: revisedSelection,
-                    expecting: revisedText,
-                    with: originalSelection.text
-                ) {
+                    route: route,
+                    targetApp: targetApp,
+                    clipboardSnapshot: clipboardSnapshot
+                )) {
                     self.showAlert(
                         title: "O texto mudou enquanto você revisava",
                         message: "Nada foi sobrescrito. Use Desfazer no aplicativo de origem se ainda quiser voltar ao texto anterior."
@@ -1296,16 +1392,22 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                 guard let self else { return false }
                 let changed: Bool
                 if wantsOriginal {
-                    changed = self.replaceSelection(
+                    changed = await self.replaceAppliedText(
+                        revisedText,
+                        with: originalSelection.text,
                         in: revisedSelection,
-                        expecting: revisedText,
-                        with: originalSelection.text
+                        route: route,
+                        targetApp: targetApp,
+                        clipboardSnapshot: clipboardSnapshot
                     )
                 } else {
-                    changed = self.replaceSelection(
+                    changed = await self.replaceAppliedText(
+                        originalSelection.text,
+                        with: revisedText,
                         in: originalSelection,
-                        expecting: originalSelection.text,
-                        with: revisedText
+                        route: route,
+                        targetApp: targetApp,
+                        clipboardSnapshot: clipboardSnapshot
                     )
                 }
                 guard changed else {
@@ -1321,11 +1423,14 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             },
             onConfirm: { [weak self] in
                 guard let self else { return }
-                if showingOriginal && revisedText != originalSelection.text {
-                    guard self.replaceSelection(
+                if showingOriginal, revisedText != originalSelection.text {
+                    guard await self.replaceAppliedText(
+                        originalSelection.text,
+                        with: revisedText,
                         in: originalSelection,
-                        expecting: originalSelection.text,
-                        with: revisedText
+                        route: route,
+                        targetApp: targetApp,
+                        clipboardSnapshot: clipboardSnapshot
                     ) else {
                         self.showAlert(
                             title: "O texto mudou enquanto você revisava",
@@ -1513,21 +1618,30 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     /// Devolve `true` quando o resultado chegou ao documento. Nos demais casos
     /// um alerta já explicou o que houve e o resultado pode estar na área de
     /// transferência para colar à mão.
+    ///
+    /// Em `silencioso` nenhum alerta aparece, a área de transferência fica como
+    /// estava e a recusa é só o `false` devolvido. É o modo das tentativas que
+    /// podem terminar na prévia, sem nada a explicar a quem está escrevendo.
     private func injectText(
         _ finalText: String,
         selection: CapturedSelection,
         targetApp: NSRunningApplication?,
-        clipboardSnapshot: ClipboardSnapshot?
+        clipboardSnapshot: ClipboardSnapshot?,
+        silencioso: Bool = false
     ) async -> Bool {
+        func recusar(title: String, message: String) -> Bool {
+            if !silencioso { showAlert(title: title, message: message) }
+            return false
+        }
+
         guard let targetApp else {
             clipboardSnapshot?.restoreIfUnchanged(
                 since: selection.clipboardChangeCount
             )
-            showAlert(
+            return recusar(
                 title: "Aplicativo de destino não encontrado",
                 message: "Copie o resultado pela prévia e cole-o manualmente."
             )
-            return false
         }
 
         NSApp.yieldActivation(to: targetApp)
@@ -1535,11 +1649,10 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
 
         guard await waitForAppActive(targetApp, maxAttempts: 30) else {
             clipboardSnapshot?.restoreIfUnchanged(since: selection.clipboardChangeCount)
-            showAlert(
+            return recusar(
                 title: "Não foi possível voltar ao aplicativo anterior",
                 message: "O texto não foi colado. Tente usar o botão “Copiar” na prévia."
             )
-            return false
         }
 
         // Caminho preferido: escrever direto no campo pela Acessibilidade. Não
@@ -1553,6 +1666,13 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
 
         let readiness = await prepareSelectionForPaste(selection)
         guard readiness != .no else {
+            // Em silêncio o resultado não vai para a área de transferência: ela
+            // volta ao que era e quem chamou segue para a prévia, onde o texto
+            // continua à mão sem ocupar o lugar do que a pessoa havia copiado.
+            guard !silencioso else {
+                clipboardSnapshot?.restoreIfUnchanged(since: selection.clipboardChangeCount)
+                return false
+            }
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
             pasteboard.setString(finalText, forType: .string)
@@ -1566,11 +1686,10 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         // Retaguarda: área de transferência + ⌘V.
         guard !IsSecureEventInputEnabled() else {
             clipboardSnapshot?.restoreIfUnchanged(since: selection.clipboardChangeCount)
-            showAlert(
+            return recusar(
                 title: "Entrada protegida ativa",
                 message: "Um campo seguro está em foco e impede a colagem. Use o botão “Copiar” na prévia."
             )
-            return false
         }
 
         // Quando a seleção foi lida pela Acessibilidade, a área de transferência
@@ -1582,11 +1701,10 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         pasteboard.clearContents()
         guard pasteboard.setString(finalText, forType: .string) else {
             backup.restore()
-            showAlert(
+            return recusar(
                 title: "Falha ao preparar o texto",
                 message: "Não foi possível usar a área de transferência."
             )
-            return false
         }
         let injectionChangeCount = pasteboard.changeCount
 
@@ -1597,11 +1715,13 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         // o mesmo texto, e o ⌘V substitui exatamente aquela seleção.
         let focoConfere = readiness == .byRecopy || capturedElementIsFocused(selection)
         guard targetApp.isActive, focoConfere else {
-            showAlert(
+            // Em silêncio o resultado também não fica na área de transferência:
+            // ela volta ao que era antes desta tentativa.
+            if silencioso { backup.restoreIfUnchanged(since: injectionChangeCount) }
+            return recusar(
                 title: "Resultado copiado",
                 message: "O foco do editor mudou antes da colagem. Use ⌘V para colar o resultado no local desejado."
             )
-            return false
         }
         sendKeyboardShortcut(keyCode: CGKeyCode(kVK_ANSI_V), flags: .maskCommand)
         logger.info(
