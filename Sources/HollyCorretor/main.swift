@@ -1312,7 +1312,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         returnFocus(to: targetApp)
         guard await waitForAppActive(targetApp, maxAttempts: 30) else { return false }
         await waitForModifiersReleased()
-        guard selectBackwards(characters: current.count) else { return false }
+        guard await selectBackwards(characters: current.count) else { return false }
 
         let trocou = await injectText(
             next,
@@ -1332,13 +1332,22 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     /// Isto não escreve nada. Se a seleção não sair exatamente igual ao texto
     /// esperado — porque a pessoa digitou no meio, por exemplo —, a releitura
     /// recusa a troca e o documento fica como está.
-    private func selectBackwards(characters count: Int) -> Bool {
+    private func selectBackwards(characters count: Int) async -> Bool {
         // Acima disso a rajada de teclas custa mais do que vale; o texto segue
         // no documento e o aviso explica que o Desfazer do editor resolve.
         guard count > 0, count <= 2000, !IsSecureEventInputEnabled() else { return false }
         for _ in 0..<count {
             sendKeyboardShortcut(keyCode: CGKeyCode(kVK_LeftArrow), flags: .maskShift)
         }
+
+        // As teclas sintéticas chegam ao editor de forma assíncrona, e uma
+        // rajada longa demora a ser consumida. Sem esta pausa, a releitura que
+        // confere a seleção pode acontecer antes de ela terminar: o texto volta
+        // menor do que o esperado e a troca é recusada sem nada de errado ter
+        // acontecido. O tempo acompanha o tamanho da rajada, com piso para o
+        // caso curto e teto para não prender a interface.
+        let esperaEmMilissegundos = min(800, max(120, count / 2))
+        try? await Task.sleep(nanoseconds: UInt64(esperaEmMilissegundos) * 1_000_000)
         return true
     }
 
