@@ -4,6 +4,51 @@ As alterações relevantes do HollyCorretor são registradas neste arquivo.
 
 ## Não publicado
 
+### Clique direito em qualquer aplicativo
+
+- O botão do HollyCorretor passa a aparecer ao lado do menu de contexto sempre
+  que a pessoa clica com o botão direito (ou Control + clique) sobre um texto
+  selecionado — em qualquer aplicativo, inclusive nos que não oferecem o menu
+  Serviços, como os feitos em Electron (Claude, WhatsApp, Slack, VS Code). O
+  macOS não permite que um aplicativo acrescente itens ao menu de outro; o
+  botão ao lado do menu é o que dá ao clique direito o mesmo resultado em
+  todos, e nos nativos (TextEdit, Mail, Word) poupa o caminho pelo submenu
+  Serviços. Uma palavra só já basta. A opção **HollyCorretor no clique
+  direito** nasce ligada e fica no menu da barra e em Preferências.
+- A sondagem do clique direito é feita dentro do callback do event tap, antes
+  de o aplicativo receber o clique: depois disso o menu de contexto cobre o
+  ponto clicado e toma o foco, e uma sondagem tardia só encontra o menu.
+- A conferência periódica que recolhe o botão passa a registrar o motivo no
+  log e a aceitar editores que, como o Word, respondem por elementos
+  diferentes a cada consulta, nem todos com intervalo de seleção.
+- O clique no botão vale mesmo com o menu de contexto do outro aplicativo
+  aberto. O macOS entrega esse clique ao menu, que apenas se fecha; o vigia o
+  vê de qualquer forma e aciona o botão, em vez de exigir um segundo clique.
+- No clique direito a seleção é procurada a partir do elemento sob o ponteiro,
+  subindo pelos ancestrais, e só depois no campo com foco. Nos aplicativos em
+  Electron o campo de digitação costuma manter o foco enquanto a seleção está
+  no texto da conversa, e o foco sozinho não a encontrava.
+- A conferência de que a seleção continua a mesma deixa de depender da
+  identidade do elemento de Acessibilidade, que os editores baseados no
+  Chromium trocam a cada consulta; vale o mesmo texto continuar selecionado no
+  mesmo intervalo.
+
+### Interface
+
+- O aplicativo ganha ícone próprio (`Resources/AppIcon.icns`), desenhado em
+  código por `scripts/gerar-icone.swift` na identidade da suíte Holly. Aparece
+  nos alertas, no painel Sobre, no Dock enquanto as Preferências estão abertas
+  e na lista de Acessibilidade dos Ajustes do Sistema.
+- O botão flutuante passa a mostrar o nome HollyCorretor com o símbolo na cor
+  da marca, sobre fundo translúcido, para ficar claro de onde ele vem quando
+  aparece ao lado de um menu de outro aplicativo.
+- As Preferências ficam organizadas em grupos — Geral, Acionamento, Atalhos de
+  teclado, Ação personalizada e Privacidade —, com a explicação de cada opção
+  logo abaixo dela.
+- O menu da barra ganha **Sobre o HollyCorretor**, com a versão e a
+  compilação, e segue a convenção do macOS para reticências e para o item
+  Sair.
+
 ### Correções
 
 - Aplica o resultado em editores que não publicam `AXSelectedTextRange` — os

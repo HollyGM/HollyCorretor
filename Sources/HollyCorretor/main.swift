@@ -155,6 +155,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     private var actionPanelFocusGraceUntil = Date.distantPast
     private var lastHit: SelectionWatcher.Hit?
     private var pillMenuItem: NSMenuItem?
+    private var rightClickMenuItem: NSMenuItem?
     private var launchAtLoginItem: NSMenuItem?
     private var aiWarningItem: NSMenuItem?
     private var aiWarningSeparator: NSMenuItem?
@@ -209,7 +210,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                if AppPreferences.showsSelectionPill {
+                if AppPreferences.wantsSelectionWatcher {
                     if !self.startSelectionWatcherIfEnabled() {
                         self.requestAccessibilityPermission()
                     }
@@ -271,16 +272,23 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
 
         menu.addItem(.separator())
         
-        let historyItem = NSMenuItem(title: "Ver histórico...", action: #selector(showHistory), keyEquivalent: "")
+        let historyItem = NSMenuItem(title: "Ver histórico…", action: #selector(showHistory), keyEquivalent: "")
         historyItem.target = self
         menu.addItem(historyItem)
-        
+
         menu.addItem(.separator())
+
+        let rightClickItem = NSMenuItem(title: "HollyCorretor no clique direito", action: #selector(toggleRightClickPill), keyEquivalent: "")
+        rightClickItem.target = self
+        rightClickItem.state = AppPreferences.showsPillOnRightClick ? .on : .off
+        rightClickItem.toolTip = "Ao clicar com o botão direito sobre um texto selecionado, mostra o botão do HollyCorretor ao lado do menu — em qualquer aplicativo, inclusive nos que não têm o menu Serviços."
+        menu.addItem(rightClickItem)
+        rightClickMenuItem = rightClickItem
 
         let pillItem = NSMenuItem(title: "Botão ao selecionar texto", action: #selector(toggleSelectionPill), keyEquivalent: "")
         pillItem.target = self
         pillItem.state = AppPreferences.showsSelectionPill ? .on : .off
-        pillItem.toolTip = "Mostra a pastilha do HollyCorretor ao lado de qualquer texto selecionado, em qualquer aplicativo."
+        pillItem.toolTip = "Mostra o botão do HollyCorretor assim que um texto é selecionado com o mouse, em qualquer aplicativo."
         menu.addItem(pillItem)
         pillMenuItem = pillItem
 
@@ -290,17 +298,21 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         menu.addItem(loginItem)
         launchAtLoginItem = loginItem
 
-        let settingsItem = NSMenuItem(title: "Preferências...", action: #selector(showSettings), keyEquivalent: ",")
+        let settingsItem = NSMenuItem(title: "Preferências…", action: #selector(showSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
 
-        let accessibilityItem = NSMenuItem(title: "Permissão de Acessibilidade...", action: #selector(requestAccessibilityPermission), keyEquivalent: "")
+        let accessibilityItem = NSMenuItem(title: "Permissão de Acessibilidade…", action: #selector(requestAccessibilityPermission), keyEquivalent: "")
         accessibilityItem.target = self
         menu.addItem(accessibilityItem)
 
         menu.addItem(.separator())
 
-        let quitItem = NSMenuItem(title: "Sair", action: #selector(quit), keyEquivalent: "q")
+        let aboutItem = NSMenuItem(title: "Sobre o HollyCorretor", action: #selector(showAbout), keyEquivalent: "")
+        aboutItem.target = self
+        menu.addItem(aboutItem)
+
+        let quitItem = NSMenuItem(title: "Sair do HollyCorretor", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
@@ -315,7 +327,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             // novo em vez de exigir que a pessoa reabra o aplicativo.
             // Sem alerta aqui: um alerta modal aberto no meio do rastreamento
             // do menu trava o menu. O próprio item já indica o que falta.
-            if AppPreferences.showsSelectionPill, selectionWatcher?.isRunning != true {
+            if AppPreferences.wantsSelectionWatcher, selectionWatcher?.isRunning != true {
                 startSelectionWatcherIfEnabled(alertOnFailure: false)
             }
             selectionWatcher?.reenableIfNeeded()
@@ -529,6 +541,27 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
+
+    /// O painel "Sobre" padrão do macOS, com o ícone, a versão e uma linha de
+    /// créditos. É o que se espera encontrar num aplicativo de barra de menus.
+    @objc private func showAbout() {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"
+        let credits = NSMutableAttributedString(
+            string: "Correção, reescrita, formalização e resumo com a Apple Intelligence, sem o texto sair do seu Mac.\n\nParte da suíte Holly.",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 11),
+                .foregroundColor: NSColor.secondaryLabelColor
+            ]
+        )
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: "HollyCorretor",
+            .applicationVersion: version,
+            .version: "Compilação \(build)",
+            .credits: credits
+        ])
+    }
 
     /// Depois de executar uma App Intent, o linkd espera 30 segundos e pede ao
     /// aplicativo que se encerre, supondo que o abriu só para aquilo. Um app de
@@ -1883,11 +1916,13 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     // MARK: - Botão flutuante de seleção
 
     /// Liga o vigia que faz a pastilha do HollyCorretor aparecer ao lado de
-    /// qualquer texto selecionado, em qualquer aplicativo. É o que a ferramenta
-    /// do sistema não consegue fazer fora dos campos de texto nativos.
+    /// qualquer texto selecionado, em qualquer aplicativo — ao arrastar o mouse
+    /// ou ao clicar com o botão direito, conforme as preferências. É o que a
+    /// ferramenta do sistema não consegue fazer fora dos campos de texto
+    /// nativos, e o que leva o clique direito aos aplicativos sem menu Serviços.
     @discardableResult
     private func startSelectionWatcherIfEnabled(alertOnFailure: Bool = true) -> Bool {
-        guard AppPreferences.showsSelectionPill else {
+        guard AppPreferences.wantsSelectionWatcher else {
             stopSelectionWatcher()
             return false
         }
@@ -1905,10 +1940,15 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         selectionPill = pill
 
         let watcher = selectionWatcher ?? SelectionWatcher()
+        watcher.respondsToDrag = AppPreferences.showsSelectionPill
+        watcher.respondsToRightClick = AppPreferences.showsPillOnRightClick
         watcher.onShow = { [weak self] hit in
             self?.lastHit = hit
             guard self?.actionPanelWindow == nil, self?.isProcessing == false else { return }
-            pill.show(at: hit.anchor)
+            switch hit.trigger {
+            case .drag: pill.show(at: hit.anchor)
+            case .rightClick: pill.show(nearPointer: hit.pointer)
+            }
         }
         watcher.onHide = { [weak self] in
             self?.lastHit = nil
@@ -1928,6 +1968,16 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             if let frame = self.actionPanelWindow?.frame, frame.contains(point) { return true }
             return false
         }
+        // Com o menu de contexto de outro aplicativo aberto, o clique na
+        // pastilha é consumido pelo menu e o botão nunca o recebe. O tap vê o
+        // clique mesmo assim; aciona a pastilha por aqui para um clique bastar.
+        // Sem menu aberto, o botão também recebe o clique: `pillActivated`
+        // consome a seleção guardada na primeira chamada e ignora a segunda.
+        watcher.onInterfaceClick = { [weak self] point in
+            guard let self, let frame = pill.frame, frame.contains(point) else { return }
+            pill.hide()
+            self.pillActivated()
+        }
         selectionWatcher = watcher
 
         let started = watcher.start()
@@ -1941,20 +1991,34 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         return started
     }
 
-    /// Deixa visível no menu quando o botão flutuante está ligado mas parado
-    /// por falta de permissão — o caso mais comum logo depois de recompilar.
+    /// Deixa visível no menu quando um dos botões flutuantes está ligado mas
+    /// parado por falta de permissão — o caso mais comum logo depois de
+    /// recompilar.
     private func refreshPillMenuItem() {
-        guard let item = pillMenuItem else { return }
-        let wanted = AppPreferences.showsSelectionPill
         let running = selectionWatcher?.isRunning ?? false
+        let permissionHint = "Autorize o HollyCorretor em Ajustes do Sistema › Privacidade e Segurança › Acessibilidade."
 
-        item.state = wanted ? .on : .off
-        if wanted && !running {
-            item.title = "Botão ao selecionar texto — falta permissão"
-            item.toolTip = "Autorize o HollyCorretor em Ajustes do Sistema › Privacidade e Segurança › Acessibilidade."
-        } else {
-            item.title = "Botão ao selecionar texto"
-            item.toolTip = "Mostra a pastilha do HollyCorretor ao lado de qualquer texto selecionado, em qualquer aplicativo."
+        if let item = pillMenuItem {
+            let wanted = AppPreferences.showsSelectionPill
+            item.state = wanted ? .on : .off
+            if wanted && !running {
+                item.title = "Botão ao selecionar texto — falta permissão"
+                item.toolTip = permissionHint
+            } else {
+                item.title = "Botão ao selecionar texto"
+                item.toolTip = "Mostra o botão do HollyCorretor assim que um texto é selecionado com o mouse, em qualquer aplicativo."
+            }
+        }
+        if let item = rightClickMenuItem {
+            let wanted = AppPreferences.showsPillOnRightClick
+            item.state = wanted ? .on : .off
+            if wanted && !running {
+                item.title = "HollyCorretor no clique direito — falta permissão"
+                item.toolTip = permissionHint
+            } else {
+                item.title = "HollyCorretor no clique direito"
+                item.toolTip = "Ao clicar com o botão direito sobre um texto selecionado, mostra o botão do HollyCorretor ao lado do menu — em qualquer aplicativo, inclusive nos que não têm o menu Serviços."
+            }
         }
     }
 
@@ -1963,13 +2027,27 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         selectionWatcher = nil
         selectionPill?.hide()
         lastHit = nil
-        pillMenuItem?.state = .off
+        pillMenuItem?.state = AppPreferences.showsSelectionPill ? .on : .off
+        rightClickMenuItem?.state = AppPreferences.showsPillOnRightClick ? .on : .off
     }
 
     @objc private func toggleSelectionPill() {
         let novo = !AppPreferences.showsSelectionPill
         UserDefaults.standard.set(novo, forKey: AppPreferences.selectionPillKey)
-        guard novo else {
+        applySelectionWatcherPreferences()
+    }
+
+    @objc private func toggleRightClickPill() {
+        let novo = !AppPreferences.showsPillOnRightClick
+        UserDefaults.standard.set(novo, forKey: AppPreferences.rightClickPillKey)
+        applySelectionWatcherPreferences()
+    }
+
+    /// Religa, reconfigura ou para o vigia conforme as duas preferências. Com
+    /// as duas desligadas, o tap é desfeito; com qualquer uma ligada, o vigia
+    /// recebe os gestos a que deve responder.
+    private func applySelectionWatcherPreferences() {
+        guard AppPreferences.wantsSelectionWatcher else {
             stopSelectionWatcher()
             refreshPillMenuItem()
             return
@@ -1980,11 +2058,17 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     }
 
     /// A pastilha foi clicada: guarda a seleção e abre o painel de ações.
+    ///
+    /// O clique pode chegar duas vezes — pelo tap do vigia e pelo próprio
+    /// botão. A seleção guardada é consumida na primeira; a segunda não
+    /// encontra nada e termina em silêncio.
     private func pillActivated() {
         guard let hit = lastHit else {
-            logger.error("Pastilha clicada sem seleção guardada.")
+            logger.debug("Pastilha acionada sem seleção guardada; clique já atendido.")
             return
         }
+        lastHit = nil
+        selectionPill?.hide()
         settlePendingResult()
         guard !isProcessing else {
             logger.info("Pastilha clicada durante outro processamento.")
@@ -1992,8 +2076,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
             return
         }
         guard selectionWatcher?.isCurrent(hit) == true else {
-            selectionPill?.hide()
-            lastHit = nil
+            logger.info("A seleção mudou antes do clique na pastilha; nada a fazer.")
             return
         }
         logger.info("Pastilha acionada com \(hit.text.count, privacy: .public) caracteres.")

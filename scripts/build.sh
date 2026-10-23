@@ -92,6 +92,14 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$BIN_DIR/$APP_NAME" "$MACOS_DIR/$APP_NAME"
 cp "$INFO_TEMPLATE" "$CONTENTS_DIR/Info.plist"
 
+# Ícone do aplicativo, gerado por scripts/gerar-icone.swift e versionado para
+# a compilação não depender de desenhar nada. É o que aparece nos alertas, no
+# painel Sobre, no Dock enquanto as Preferências estão abertas e na lista de
+# Acessibilidade dos Ajustes do Sistema.
+APP_ICON="$PROJECT_DIR/Resources/AppIcon.icns"
+test -f "$APP_ICON"
+cp "$APP_ICON" "$RESOURCES_DIR/AppIcon.icns"
+
 # Metadados das App Intents, que a Siri e o app Atalhos leem para descobrir as
 # ações. O Xcode os gera numa etapa própria, ausente nas Command Line Tools; aqui
 # o próprio binário os escreve a partir dos tipos compilados e confere se cada

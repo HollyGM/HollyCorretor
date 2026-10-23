@@ -1,8 +1,9 @@
 import Foundation
 
 extension Notification.Name {
-    /// Publicada quando a preferência do botão flutuante muda na janela de
-    /// Preferências, para o delegate religar ou parar o vigia.
+    /// Publicada quando uma das preferências do botão flutuante (ao selecionar
+    /// ou no clique direito) muda na janela de Preferências, para o delegate
+    /// religar, reconfigurar ou parar o vigia.
     static let hollySelectionPillPreferenceChanged =
         Notification.Name("HollySelectionPillPreferenceChanged")
 }
@@ -12,6 +13,7 @@ enum AppPreferences {
     static let saveHistoryKey = "saveHistory"
     static let privateCloudComputeKey = "usePrivateCloudCompute"
     static let selectionPillKey = "showSelectionPill"
+    static let rightClickPillKey = "showPillOnRightClick"
 
     /// Chave antiga: o histórico ficava em texto claro dentro do plist de
     /// preferências. Continua declarada para a migração poder limpá-la.
@@ -27,11 +29,19 @@ enum AppPreferences {
             // guardar isso por padrão inverte a expectativa de quem o usa.
             saveHistoryKey: false,
             privateCloudComputeKey: false,
-            // Nasce desligado: a ativação padrão é o item HollyCorretor no menu
-            // de clique direito. A pastilha continua disponível para quem
-            // preferir, mas exige monitorar o mouse no sistema inteiro, o que é
-            // bem mais intrusivo do que responder a um item de menu.
-            selectionPillKey: false
+            // Nasce desligado: aparecer a cada arrastar do mouse é um aviso a
+            // mais na tela, e nem toda seleção é texto para reescrever. A
+            // pastilha continua disponível para quem preferir.
+            selectionPillKey: false,
+            // Nasce ligado: o clique direito é a forma principal de acionar o
+            // HollyCorretor, e o item do menu Serviços só existe nos menus
+            // nativos do macOS. Os aplicativos feitos em Electron (Claude,
+            // WhatsApp, Slack, VS Code) montam os próprios menus, sem
+            // Serviços; a pastilha ao lado do menu é o que alcança todos eles,
+            // e nos nativos poupa o caminho pelo submenu. O vigia que a
+            // sustenta só escuta botões do mouse e rolagem — nunca o teclado —
+            // e só lê a seleção depois do clique.
+            rightClickPillKey: true
         ])
         migrateLegacyPreferencesIfNeeded()
     }
@@ -44,10 +54,22 @@ enum AppPreferences {
         UserDefaults.standard.bool(forKey: saveHistoryKey)
     }
 
-    /// Mostra a pastilha do HollyCorretor ao lado de qualquer texto selecionado,
-    /// em qualquer aplicativo.
+    /// Mostra a pastilha do HollyCorretor ao lado do texto assim que ele é
+    /// selecionado com o mouse, em qualquer aplicativo.
     static var showsSelectionPill: Bool {
         UserDefaults.standard.bool(forKey: selectionPillKey)
+    }
+
+    /// Mostra a pastilha do HollyCorretor junto do menu de contexto quando a
+    /// pessoa clica com o botão direito sobre um texto selecionado — inclusive
+    /// nos aplicativos que não oferecem o menu Serviços.
+    static var showsPillOnRightClick: Bool {
+        UserDefaults.standard.bool(forKey: rightClickPillKey)
+    }
+
+    /// O vigia do mouse precisa estar ligado para qualquer das duas pastilhas.
+    static var wantsSelectionWatcher: Bool {
+        showsSelectionPill || showsPillOnRightClick
     }
 
     /// Envia textos longos ao Private Cloud Compute da Apple quando eles não

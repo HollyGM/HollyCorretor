@@ -69,11 +69,18 @@ class FloatingPanel: NSPanel {
 
 // MARK: - Botão que aparece ao lado da seleção
 
-/// O acionador compacto que surge quando há texto selecionado.
+/// O acionador compacto que surge quando há texto selecionado: uma pastilha
+/// com o símbolo e o nome do HollyCorretor, para a pessoa saber de onde ela
+/// vem — no clique direito ela aparece ao lado de um menu que é de outro
+/// aplicativo.
 @MainActor
 final class SelectionPill {
     private var panel: FloatingPanel?
     private let onClick: () -> Void
+
+    /// Tamanho fixo da pastilha. É também o que o posicionamento usa antes da
+    /// janela existir.
+    private static let size = NSSize(width: 128, height: 30)
 
     init(onClick: @escaping () -> Void) {
         self.onClick = onClick
@@ -84,6 +91,7 @@ final class SelectionPill {
     /// Área ocupada na tela, para o vigia saber que um clique ali é nosso.
     var frame: NSRect? { panel?.isVisible == true ? panel?.frame : nil }
 
+    /// Ao lado da seleção que acabou de ser arrastada.
     func show(at anchor: NSRect) {
         let panel = self.panel ?? makePanel()
         self.panel = panel
@@ -91,23 +99,74 @@ final class SelectionPill {
         panel.orderFrontRegardless()
     }
 
+    /// Junto do ponteiro, acima e à esquerda do ponto clicado: o menu de
+    /// contexto que o aplicativo abriu se estende para baixo e para a direita
+    /// a partir dali, e a pastilha não pode cobri-lo nem ser coberta por ele.
+    func show(nearPointer pointer: NSPoint) {
+        let panel = self.panel ?? makePanel()
+        self.panel = panel
+        let size = panel.frame.size
+        let screen = NSScreen.screens.first(where: { $0.frame.contains(pointer) })
+            ?? NSScreen.main
+            ?? NSScreen.screens[0]
+        let visible = screen.visibleFrame
+        let gap: CGFloat = 8
+
+        var x = pointer.x - size.width - gap
+        var y = pointer.y + gap
+        if x < visible.minX + 8 {
+            // Sem espaço à esquerda, fica acima do ponteiro, começando nele; o
+            // menu só começa abaixo do ponteiro, então não há sobreposição.
+            x = pointer.x
+        }
+        if y + size.height > visible.maxY - 8 {
+            // Perto do topo o menu abre para baixo como sempre; a pastilha vai
+            // para baixo do ponteiro, do lado de fora da coluna do menu.
+            y = pointer.y - size.height - gap
+            x = min(x, pointer.x - size.width - gap)
+        }
+        x = min(max(x, visible.minX + 8), visible.maxX - size.width - 8)
+        y = min(max(y, visible.minY + 8), visible.maxY - size.height - 8)
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
+        panel.orderFrontRegardless()
+    }
+
     func hide() {
-        panel?.orderOut(nil)
+        // Só quando está à mostra: cada rolagem e cada clique pedem para
+        // esconder, e ordenar para fora uma janela já escondida é trabalho
+        // (e registro no log) a sessenta vezes por segundo.
+        guard let panel, panel.isVisible else { return }
+        panel.orderOut(nil)
     }
 
     private func makePanel() -> FloatingPanel {
-        let size = NSSize(width: 30, height: 30)
+        let size = Self.size
         let panel = FloatingPanel(size: size, acceptsKeyboard: false)
+        // Um nível acima dos menus de contexto: a pastilha do clique direito
+        // convive com o menu que o aplicativo abriu e precisa ficar visível
+        // mesmo que o sistema o posicione por cima dela.
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 1)
 
-        let button = PillButton(title: "", symbol: "wand.and.stars")
+        let background = NSVisualEffectView(frame: NSRect(origin: .zero, size: size))
+        background.material = .popover
+        background.blendingMode = .behindWindow
+        background.state = .active
+        background.wantsLayer = true
+        background.layer?.cornerRadius = size.height / 2
+        background.layer?.cornerCurve = .continuous
+        background.layer?.masksToBounds = true
+        background.layer?.borderWidth = 1
+        background.layer?.borderColor = NSColor.separatorColor.cgColor
+        background.autoresizingMask = [.width, .height]
+
+        let button = PillButton(title: "HollyCorretor", symbol: "wand.and.stars")
         button.target = self
         button.action = #selector(clicked)
-        button.frame = NSRect(origin: .zero, size: size)
+        button.frame = background.bounds
         button.autoresizingMask = [.width, .height]
+        background.addSubview(button)
 
-        let container = NSView(frame: button.frame)
-        container.addSubview(button)
-        panel.contentView = container
+        panel.contentView = background
         return panel
     }
 
@@ -117,23 +176,45 @@ final class SelectionPill {
     }
 }
 
-/// Botão arredondado com ícone e rótulo, desenhado à mão para poder ter o
-/// visual de pastilha flutuante.
+/// Botão em forma de pastilha: símbolo na cor da marca e o nome do app.
 private final class PillButton: NSButton {
     private var hovering = false
     private var tracking: NSTrackingArea?
 
+    /// Laranja da identidade Holly, um pouco mais fechado no modo claro para
+    /// manter o contraste sobre o fundo translúcido.
+    static let brandTint = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 1.00, green: 0.64, blue: 0.40, alpha: 1)
+            : NSColor(srgbRed: 0.85, green: 0.44, blue: 0.16, alpha: 1)
+    }
+
     init(title: String, symbol: String) {
         super.init(frame: .zero)
+        let configuration = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
         self.title = title
-        self.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        self.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(configuration)
         self.imagePosition = title.isEmpty ? .imageOnly : .imageLeading
+        self.imageHugsTitle = true
         self.isBordered = false
-        self.font = .systemFont(ofSize: 12, weight: .medium)
-        self.contentTintColor = .labelColor
+        self.font = .systemFont(ofSize: 12, weight: .semibold)
+        self.contentTintColor = Self.brandTint
         self.wantsLayer = true
         self.toolTip = "Abrir o HollyCorretor para o texto selecionado"
         self.setAccessibilityLabel("HollyCorretor")
+
+        // O título fica na cor do texto; só o símbolo leva a cor da marca.
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        self.attributedTitle = NSAttributedString(
+            string: title,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+                .foregroundColor: NSColor.labelColor,
+                .paragraphStyle: paragraph
+            ]
+        )
     }
 
     @available(*, unavailable)
@@ -162,14 +243,12 @@ private final class PillButton: NSButton {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let radius = min(bounds.width, bounds.height) / 2
-        let path = NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius)
-        (hovering ? NSColor.controlAccentColor.withAlphaComponent(0.16) : NSColor.controlBackgroundColor)
-            .setFill()
-        path.fill()
-        NSColor.separatorColor.setStroke()
-        path.lineWidth = 1
-        path.stroke()
+        if hovering {
+            let radius = min(bounds.width, bounds.height) / 2
+            let path = NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius)
+            Self.brandTint.withAlphaComponent(0.14).setFill()
+            path.fill()
+        }
         super.draw(dirtyRect)
     }
 }

@@ -52,25 +52,36 @@ separadamente e serve de base para futuros clientes de outras plataformas.
 
 ## Como acionar
 
-A forma principal é o **menu de clique direito**: selecione o texto, clique com o
-botão direito e escolha **Serviços › HollyCorretor…**. Um painel flutuante reúne
-as ações de revisão e reescrita num visual semelhante às Ferramentas de Escrita
-da Apple.
+A forma principal é o **clique direito**: selecione o texto — uma palavra já
+basta — e clique com o botão direito sobre ele. Em qualquer aplicativo, um botão
+**HollyCorretor** aparece ao lado do menu de contexto; um clique nele abre o
+painel flutuante com as ações de revisão e reescrita, num visual semelhante às
+Ferramentas de Escrita da Apple.
 
-O menu de Serviços depende de o aplicativo de origem oferecê-lo, o que vale para
-os aplicativos nativos do macOS — Mail, Notas, Pages, Word — mas não para todos
-os feitos em Electron.
+Esse botão existe porque o item **Serviços › HollyCorretor…** só aparece nos
+menus de contexto nativos do macOS (TextEdit, Mail, Notas, Pages, Safari, Word).
+Os aplicativos feitos em Electron — Claude, WhatsApp, Slack, VS Code — montam os
+próprios menus, sem Serviços, e o macOS não permite que um aplicativo acrescente
+itens ao menu de outro. O botão ao lado do menu é o que dá ao clique direito o
+mesmo resultado em todos eles. Nos aplicativos nativos, o item de Serviços
+continua lá e abre o mesmo painel; o botão só poupa o caminho pelo submenu.
 
-Para alcançar também esses, existe a opção **Botão ao selecionar texto**, que faz
-uma pastilha do HollyCorretor aparecer ao lado de qualquer seleção, em qualquer
-aplicativo. Ela nasce desligada, porque exige monitorar o mouse em todo o
-sistema; ligue-a no menu da barra ou em Preferências se precisar. A pastilha fica
-presa ao aplicativo, ao campo e ao trecho em que nasceu: trocar de aplicativo ou
-de campo, inclusive pelo teclado, a invalida.
+O botão fica preso ao aplicativo, ao campo e ao trecho em que nasceu: trocar de
+aplicativo ou de campo, inclusive pelo teclado, o invalida. Ele depende da
+permissão de Acessibilidade e de um vigia que escuta apenas os botões do mouse
+e a rolagem — nunca o teclado —, e que só lê a seleção depois do clique.
+**HollyCorretor no clique direito** nasce ligado e pode ser desligado no menu da
+barra ou em Preferências.
+
+Há ainda a opção **Botão ao selecionar texto**, que faz o mesmo botão aparecer
+assim que um trecho é selecionado com o mouse, sem clique direito. Ela nasce
+desligada, para o botão não surgir a cada seleção, e exige pelo menos 12
+caracteres.
 
 Na primeira instalação, o macOS pode deixar um Serviço de terceiros desmarcado.
-Se **HollyCorretor…** não aparecer, ative-o uma vez em **Ajustes do Sistema ›
-Teclado › Atalhos de Teclado › Serviços › Texto**.
+Se **HollyCorretor…** não aparecer no menu Serviços dos aplicativos nativos,
+ative-o uma vez em **Ajustes do Sistema › Teclado › Atalhos de Teclado ›
+Serviços › Texto**.
 
 ## Pela Siri e pelo app Atalhos
 
@@ -129,6 +140,8 @@ O painel do clique direito traz ainda um campo para descrever a alteração com 
 próprias palavras e as ações **Amigável**, **Profissional**, **Conciso**,
 **Pontos Principais**, **Lista** e **Tabela**, que não têm atalho.
 
+O painel se fecha com Esc ou com um clique fora dele.
+
 ## Interface
 
 O HollyCorretor vive na barra de menus, sem ícone no Dock. Ao acionar uma ação —
@@ -171,13 +184,14 @@ duplo clique em `build_and_run.command` executa o mesmo script.
 No primeiro uso:
 
 1. Autorize o HollyCorretor em **Ajustes do Sistema › Privacidade e Segurança ›
-   Acessibilidade**.
-2. Confirme que **HollyCorretor…** está marcado em **Ajustes do Sistema ›
-   Teclado › Atalhos de Teclado › Serviços › Texto**.
-3. Selecione o texto em um aplicativo compatível.
-4. Clique com o botão direito sobre a seleção, escolha **Serviços ›
-   HollyCorretor…** e selecione uma ação no painel. Também dá para usar um atalho
-   de teclado ou o ícone da barra de menus.
+   Acessibilidade**. Sem isso o botão do clique direito não aparece, e o menu
+   da barra avisa que falta a permissão.
+2. Selecione um texto em qualquer aplicativo — Word, Claude, Mail, Notas.
+3. Clique com o botão direito sobre a seleção e clique no botão
+   **HollyCorretor** que aparece ao lado do menu. Nos aplicativos nativos,
+   **Serviços › HollyCorretor…** leva ao mesmo painel. Também dá para usar um
+   atalho de teclado ou o ícone da barra de menus.
+4. Escolha uma ação no painel ou descreva a alteração com as próprias palavras.
 5. O resultado aparece no próprio documento; use a barra contextual para
    comparar o original, **Reverter** ou confirmar com **OK**.
 6. Em editores que não permitem a aplicação direta com segurança, use a prévia
@@ -263,8 +277,11 @@ Estrutura principal:
 - `Tests/HollyCoreChecks`: testes automatizados do núcleo portátil;
 - `Resources/Info.plist`: versão, metadados do app e declaração dos Serviços do
   macOS;
-- `scripts`: compilação, empacotamento, execução local e criação dos atalhos da
-  Siri.
+- `Resources/AppIcon.icns`: ícone do aplicativo, gerado por
+  `scripts/gerar-icone.swift` (desenhado em código, para poder ser refeito sem
+  Xcode nem editor gráfico);
+- `scripts`: compilação, empacotamento, execução local, geração do ícone e
+  criação dos atalhos da Siri.
 
 O fluxo do GitHub Actions executa os testes e uma compilação de produção no
 macOS 26 e na versão mais recente disponível nos runners, além de uma auditoria
