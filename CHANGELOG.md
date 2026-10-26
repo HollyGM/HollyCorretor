@@ -4,6 +4,23 @@ As alterações relevantes do HollyCorretor são registradas neste arquivo.
 
 ## Não publicado
 
+### Revisão antes de substituir
+
+- Toda ação passa a terminar na prévia, antes de qualquer alteração no
+  documento. Ela abre junto do texto assim que a geração começa e mostra o
+  resultado enquanto ele é produzido; ao terminar, exibe o original e o
+  resultado um sobre o outro, com as diferenças destacadas — o que saiu, em
+  vermelho; o que entrou, em verde — e a contagem de alterações. O resultado
+  pode ser editado ali mesmo, e os destaques acompanham a edição. Nada é
+  escrito até **Substituir** (⌘↩); **Copiar** e **Cancelar** (Esc) continuam
+  lá. Vale para todas as ações, venham do painel do clique direito, dos
+  atalhos, do menu da barra, do menu Serviços ou da Siri.
+- Sai a aplicação direta com a barra de **OK** e **Reverter**: o resultado
+  entrava no documento antes de a pessoa vê-lo e, nos editores que respondem
+  "sucesso" sem mudar nada, não aparecia correção alguma.
+- O destaque das diferenças (`TextDiff`) vive no `HollyCore`, coberto por
+  testes, e usa a mesma divisão em palavras do contador de alterações.
+
 ### Clique direito em qualquer aplicativo
 
 - O botão do HollyCorretor passa a aparecer ao lado do menu de contexto sempre
@@ -51,6 +68,16 @@ As alterações relevantes do HollyCorretor são registradas neste arquivo.
 
 ### Correções
 
+- Confere se a substituição chegou de fato ao documento. Os editores baseados
+  no Chromium — o Chrome e os aplicativos feitos em Electron — respondem
+  "sucesso" à escrita pela Acessibilidade e aceitam o ⌘V mesmo quando o texto
+  não é editável (o conteúdo de uma página, a conversa de um chat), e nada
+  muda. O app acreditava neles: a ação parecia concluída e o texto continuava
+  igual — era o "às vezes corrige, às vezes não". Agora o documento é relido
+  depois da escrita e da colagem, com tolerância à atualização assíncrona da
+  árvore de Acessibilidade; se o texto antigo continua lá, o app avisa que o
+  editor não aceitou a troca e deixa o resultado na área de transferência para
+  colar com ⌘V.
 - Aplica o resultado em editores que não publicam `AXSelectedTextRange` — os
   baseados no Chromium, e com eles os aplicativos feitos em Electron. Nesses
   editores `restoreCapturedSelection` não tinha intervalo para conferir, e

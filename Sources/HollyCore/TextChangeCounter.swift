@@ -5,8 +5,8 @@ import Foundation
 /// alteração; inserções e remoções também valem uma cada.
 public enum TextChangeCounter {
     public static func count(from original: String, to revised: String) -> Int {
-        let originalTokens = tokens(in: original)
-        let revisedTokens = tokens(in: revised)
+        let originalTokens = TextTokenizer.tokens(in: original).map(\.text)
+        let revisedTokens = TextTokenizer.tokens(in: revised).map(\.text)
 
         guard originalTokens != revisedTokens else { return 0 }
 
@@ -48,18 +48,5 @@ public enum TextChangeCounter {
         }
 
         return previous[after.count]
-    }
-
-    private static func tokens(in text: String) -> [String] {
-        let pattern = #"[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)?|[^\p{L}\p{N}\s]"#
-        guard let expression = try? NSRegularExpression(pattern: pattern) else {
-            return text.split(whereSeparator: \Character.isWhitespace).map(String.init)
-        }
-
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return expression.matches(in: text, range: range).compactMap { match in
-            guard let swiftRange = Range(match.range, in: text) else { return nil }
-            return String(text[swiftRange])
-        }
     }
 }

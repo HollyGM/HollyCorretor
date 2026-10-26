@@ -122,8 +122,8 @@ private final class PreviewPanel: NSPanel {
     override func close() {
         let handler = onClose
         onClose = nil
-        handler?()
         super.close()
+        handler?()
     }
 }
 
@@ -142,8 +142,6 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     private var settingsWindowController: NSWindowController?
     private var historyWindowController: NSWindowController?
     private var previewPanel: PreviewPanel?
-    private var generationPanelWindow: FloatingPanel?
-    private var resultPanelWindow: FloatingPanel?
     private var isProcessing = false
     private var currentTask: Task<Void, Never>?
     private var selectionWatcher: SelectionWatcher?
@@ -159,10 +157,6 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     private var launchAtLoginItem: NSMenuItem?
     private var aiWarningItem: NSMenuItem?
     private var aiWarningSeparator: NSMenuItem?
-    /// Confirma, sem mexer na seleção nem no foco, um resultado que já está no
-    /// documento e só aguarda o OK. Começar outra ação vale como confirmação,
-    /// como nas Ferramentas de Escrita da Apple.
-    private var pendingResultConfirmation: (() -> Void)?
     /// Último aplicativo comum que esteve na frente. Quando a Siri ou o app
     /// Atalhos acionam uma ação, eles mesmos podem estar na frente; o texto
     /// selecionado continua no aplicativo anterior.
@@ -366,7 +360,6 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         error: AutoreleasingUnsafeMutablePointer<NSString?>
     ) {
         logger.info("Serviço HollyCorretor recebido.")
-        settlePendingResult()
         guard !isProcessing else {
             logger.info("Serviço recusado: já há operação em andamento.")
             revealCurrentOperation()
@@ -636,8 +629,8 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     }
 
     /// Ponto de entrada da Siri e do app Atalhos para agir sobre o texto
-    /// selecionado. O resultado segue o mesmo caminho do atalho de teclado:
-    /// aplicação direta com barra de conferência ou prévia antes de substituir.
+    /// selecionado. O resultado passa pela mesma
+    /// prévia, antes de substituir, como pelo atalho de teclado.
     func performFromIntent(
         _ action: CorrectionAction,
         customInstruction: String? = nil
@@ -662,7 +655,6 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         targetApp: NSRunningApplication?,
         customInstruction: String? = nil
     ) async throws(ActionStartFailure) {
-        settlePendingResult()
         guard !isProcessing else { throw .busy }
         guard checkAccessibilityPermission(prompt: true) else { throw .accessibilityDenied }
 
@@ -952,23 +944,71 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
     /// Escreve o resultado direto no campo de onde o texto saiu. Só age se a
     /// seleção ainda for exatamente a que foi capturada — caso a pessoa tenha
     /// clicado em outro lugar, não há o que substituir com segurança.
+    ///
+    /// O código de retorno da escrita não basta como prova: os editores
+    /// baseados no Chromium (o Chrome e os aplicativos feitos em Electron)
+    /// respondem "sucesso" mesmo quando o texto não é editável — o conteúdo de
+    /// uma página, a conversa de um chat — e nada muda no documento. Antes o
+    /// app acreditava neles e a pessoa não via correção nenhuma. Agora o
+    /// documento é relido depois da escrita.
     private func replaceSelection(
         in selection: CapturedSelection,
         expecting original: String,
         with text: String
-    ) -> Bool {
+    ) async -> Bool {
         guard let element = selection.element,
+              let range = selection.range,
               restoreCapturedSelection(selection, expecting: original) else { return false }
 
         var settable: DarwinBoolean = false
         guard AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &settable) == .success,
               settable.boolValue else { return false }
 
-        return AXUIElementSetAttributeValue(
+        guard AXUIElementSetAttributeValue(
             element,
             kAXSelectedTextAttribute as CFString,
             text as CFString
-        ) == .success
+        ) == .success else { return false }
+
+        return await documentChanged(from: original, to: text, at: range.location, in: element)
+    }
+
+    /// Confere, relendo o documento, se o texto novo tomou o lugar do antigo.
+    /// A árvore de Acessibilidade dos editores baseados no Chromium é
+    /// atualizada de forma assíncrona, então a releitura insiste por um
+    /// instante antes de concluir que nada mudou.
+    ///
+    /// Só é tratado como falha o caso em que o texto antigo continua lá, igual.
+    /// Se o editor devolve algo diferente dos dois — porque ajustou aspas ou
+    /// quebras de linha ao colar, por exemplo —, a substituição aconteceu do
+    /// jeito dele. Um editor que não lê por intervalo nem publica a seleção
+    /// não tem como ser conferido; vale o sucesso que ele declarou.
+    private func documentChanged(
+        from original: String,
+        to text: String,
+        at location: CFIndex,
+        in element: AXUIElement
+    ) async -> Bool {
+        guard text != original else { return true }
+        let written = CFRange(location: location, length: (text as NSString).length)
+        let previous = CFRange(location: location, length: (original as NSString).length)
+
+        for attempt in 0..<8 {
+            if attempt > 0 {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            if let actual = self.text(in: written, of: element), actual == text {
+                return true
+            }
+            if let still = self.text(in: previous, of: element) {
+                if still != original { return true }
+                continue
+            }
+            guard let selected = selectedText(of: element) else { return true }
+            if selected != original { return true }
+        }
+        logger.info("O editor aceitou a escrita, mas o texto antigo continua no documento.")
+        return false
     }
 
     /// O mesmo texto pode aparecer várias vezes no documento. Conferir apenas
@@ -1036,11 +1076,6 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         ) == .success
     }
 
-    private func rangeAfterReplacing(_ selection: CapturedSelection, with text: String) -> CFRange? {
-        guard let range = selection.range else { return nil }
-        return CFRange(location: range.location, length: (text as NSString).length)
-    }
-
     private func extractPlainText(from pboard: NSPasteboard) -> String? {
         if let text = pboard.string(forType: .string),
            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1102,25 +1137,39 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
 
     private func makePreviewPanel() -> PreviewPanel {
         let panel = PreviewPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 240),
-            styleMask: [.titled, .fullSizeContentView],
+            contentRect: NSRect(origin: .zero, size: PreviewViewController.defaultSize),
+            styleMask: [.titled, .fullSizeContentView, .resizable],
             backing: .buffered, defer: false
         )
         panel.isFloatingPanel = true
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isMovableByWindowBackground = true
+        // Quem fecha e solta a janela é o delegate; sem isto o AppKit a
+        // liberaria por conta própria ao fechar e a referência ficaria solta.
+        panel.isReleasedWhenClosed = false
+        // Os painéis nascem com `hidesOnDeactivate` ligado, e este é mostrado
+        // enquanto o editor ainda está na frente: sumia durante a geração e só
+        // aparecia com o resultado pronto. Também precisa continuar visível
+        // quando a pessoa clica no documento para comparar.
+        panel.hidesOnDeactivate = false
+        panel.minSize = PreviewViewController.minimumSize
         panel.standardWindowButton(.closeButton)?.isHidden = true
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
         return panel
     }
 
-    /// Mantém o processamento junto do texto de origem. Quando o editor oferece
-    /// os atributos de acessibilidade necessários, o resultado é aplicado no
-    /// próprio documento e uma barra compacta permite conferir ou reverter.
-    /// Editores que não permitem uma troca segura continuam recebendo a prévia
-    /// tradicional, sem nenhuma colagem às cegas.
+    /// Abre a prévia junto do texto de origem e vai preenchendo o resultado
+    /// enquanto o modelo o produz. Nada é escrito no documento até a pessoa
+    /// clicar em Substituir: antes disso ela vê o original e o resultado um
+    /// sobre o outro, com as diferenças destacadas, e pode ajustar o resultado
+    /// à mão. Vale para todas as ações.
+    ///
+    /// Era diferente: quando o editor permitia, o resultado entrava direto no
+    /// documento e uma barra pedia o OK depois. A pessoa não via o texto
+    /// corrigido antes de aceitá-lo — e, nos editores que respondem "sucesso"
+    /// sem mudar nada, não via correção alguma.
     private func processText(
         _ selection: CapturedSelection,
         action: CorrectionAction,
@@ -1128,16 +1177,14 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         clipboardSnapshot: ClipboardSnapshot?,
         customInstruction: String? = nil
     ) {
-        showGenerationPanel(
-            title: action.title,
-            anchor: selection.anchor,
-            onCancel: { [weak self] in
-                self?.cancelCurrentOperation(
-                    selection: selection,
-                    clipboardSnapshot: clipboardSnapshot
-                )
-            }
+        let preview = showPreview(
+            for: selection,
+            action: action,
+            targetApp: targetApp,
+            clipboardSnapshot: clipboardSnapshot
         )
+        // Enquanto o modelo trabalha, o editor continua com o foco; a prévia
+        // só o toma quando há resultado para revisar.
         returnFocus(to: targetApp)
 
         currentTask = Task { [weak self] in
@@ -1153,62 +1200,35 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                     customInstruction: customInstruction
                 ) {
                     switch update {
-                    case .partial:
-                        break
+                    case .partial(let text):
+                        preview.updateStreamingText(text)
                     case .finished(let text):
                         finalText = text
                     }
                 }
 
                 // Ao cancelar, o laço termina sem lançar erro: a sequência é
-                // encerrada em vez de falhar. Sem esta checagem o painel já
-                // fechado receberia um resultado parcial como se fosse final.
+                // encerrada em vez de falhar. Sem esta checagem a prévia já
+                // fechada receberia um resultado parcial como se fosse final.
                 guard !Task.isCancelled else { return }
 
                 let revisedText = finalText.isEmpty ? selection.text : finalText
                 self.logger.info("Geração concluída: \(finalText.count, privacy: .public) caracteres.")
-                let appliedRoute = await self.applyInlineIfPossible(
-                    revisedText,
-                    selection: selection,
-                    targetApp: targetApp,
-                    clipboardSnapshot: clipboardSnapshot
-                )
-                guard !Task.isCancelled else { return }
                 self.currentTask = nil
-                self.closeGenerationPanel()
                 self.updateStatusIcon(processing: false)
-
-                if let appliedRoute {
-                    self.showAppliedResultPanel(
-                        originalSelection: selection,
-                        revisedText: revisedText,
-                        action: action,
-                        targetApp: targetApp,
-                        clipboardSnapshot: clipboardSnapshot,
-                        route: appliedRoute
-                    )
-                } else {
-                    self.showFallbackPreview(
-                        revisedText,
-                        selection: selection,
-                        action: action,
-                        targetApp: targetApp,
-                        clipboardSnapshot: clipboardSnapshot
-                    )
-                }
+                self.presentResult(revisedText, in: preview)
             } catch is CancellationError {
                 // O botão Cancelar já limpou a operação. Este task pode voltar
-                // depois de uma nova geração começar; não feche o painel dela.
+                // depois de uma nova geração começar; não feche a prévia dela.
                 guard !Task.isCancelled else { return }
-                self.currentTask = nil
-                self.closeGenerationPanel()
-                self.isProcessing = false
-                self.updateStatusIcon(processing: false)
-                clipboardSnapshot?.restoreIfUnchanged(since: selection.clipboardChangeCount)
+                self.cancelCurrentOperation(
+                    selection: selection,
+                    clipboardSnapshot: clipboardSnapshot
+                )
             } catch {
                 guard !Task.isCancelled else { return }
                 self.currentTask = nil
-                self.closeGenerationPanel()
+                self.closePreview()
                 self.updateStatusIcon(processing: false)
                 self.isProcessing = false
                 clipboardSnapshot?.restoreIfUnchanged(
@@ -1223,363 +1243,28 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         }
     }
 
-    private func showGenerationPanel(
-        title: String,
-        anchor: NSRect,
-        onCancel: @escaping () -> Void
-    ) {
-        closeGenerationPanel()
-        let controller = GenerationPanelController(title: title, onCancel: onCancel)
-        let panel = FloatingPanel(size: NSSize(width: 310, height: 58), acceptsKeyboard: false)
-        panel.contentViewController = controller
-        panel.setContentSize(controller.view.fittingSize)
-        panel.position(near: anchor, preferAbove: true, gap: 6)
-        panel.orderFrontRegardless()
-        generationPanelWindow = panel
-    }
-
-    private func closeGenerationPanel() {
-        generationPanelWindow?.orderOut(nil)
-        generationPanelWindow = nil
-    }
-
-    private func cancelCurrentOperation(
-        selection: CapturedSelection,
-        clipboardSnapshot: ClipboardSnapshot?
-    ) {
-        currentTask?.cancel()
-        currentTask = nil
-        closeGenerationPanel()
-        clipboardSnapshot?.restoreIfUnchanged(since: selection.clipboardChangeCount)
-        isProcessing = false
-        updateStatusIcon(processing: false)
-    }
-
-    private func returnFocus(to targetApp: NSRunningApplication?) {
-        guard let targetApp else { return }
-        NSApp.yieldActivation(to: targetApp)
-        targetApp.activate()
-    }
-
-    /// Por onde o resultado chegou ao documento. O painel de resultado aplicado
-    /// precisa saber: reverter e alternar o original desfazem a aplicação pelo
-    /// mesmo caminho que a fez.
-    private enum AppliedRoute {
-        /// Escrito direto no campo pela Acessibilidade.
-        case acessibilidade
-        /// Colado com ⌘V, com a seleção autorizada pela releitura.
-        case colagem
-    }
-
-    /// Devolve o caminho que aplicou o resultado, ou `nil` quando nenhum pôde
-    /// aplicá-lo com segurança — e aí a prévia entra em cena.
-    private func applyInlineIfPossible(
-        _ revisedText: String,
-        selection: CapturedSelection,
-        targetApp: NSRunningApplication?,
-        clipboardSnapshot: ClipboardSnapshot?
-    ) async -> AppliedRoute? {
-        guard !Task.isCancelled else { return nil }
-        if revisedText == selection.text {
-            // Nada a aplicar, e é isso que o painel mostra como "0 alterações".
-            logger.info("O modelo devolveu o texto sem alteração; nada a aplicar.")
-            return .acessibilidade
-        }
-        guard let targetApp else { return nil }
-
-        returnFocus(to: targetApp)
-        guard await waitForAppActive(targetApp, maxAttempts: 30),
-              !Task.isCancelled else { return nil }
-        if replaceSelection(in: selection, expecting: selection.text, with: revisedText) {
-            logger.info("Resultado aplicado no documento pela Acessibilidade.")
-            return .acessibilidade
-        }
-
-        // Os editores baseados no Chromium não publicam o intervalo da seleção,
-        // e sem ele a Acessibilidade não tem como escrever no campo. A colagem
-        // ainda pode valer: o `injectText` confere a seleção relendo-a com ⌘C e
-        // só cola com essa autorização. Em silêncio, porque daqui a prévia
-        // ainda é um fim possível. A cópia de segurança vai junto: o ⌘C da
-        // captura já ocupou a área de transferência, e deixar o `injectText`
-        // tirar a dele agora perderia o que a pessoa tinha copiado antes.
-        guard !Task.isCancelled else { return nil }
-        if await injectText(
-            revisedText,
-            selection: selection,
-            targetApp: targetApp,
-            clipboardSnapshot: clipboardSnapshot,
-            silencioso: true
-        ) {
-            logger.info("Resultado aplicado no documento pela colagem autorizada por releitura.")
-            return .colagem
-        }
-
-        // A releitura da conferência deixa na área de transferência o texto
-        // capturado, com um contador novo que a restauração condicional já não
-        // reconhece. Enquanto for esse texto que está lá, devolver o conteúdo
-        // anterior não atropela nada que a pessoa tenha copiado no caminho.
-        if let clipboardSnapshot,
-           let atual = extractPlainText(from: .general),
-           SelectionGuard.holds(captured: selection.text, recopied: atual) {
-            clipboardSnapshot.restore()
-        }
-        logger.info("O editor não permitiu aplicar a revisão diretamente; exibindo a prévia.")
-        return nil
-    }
-
-    /// Troca um texto já escrito no documento por outro, pelo mesmo caminho que
-    /// aplicou o resultado. Onde a Acessibilidade escreve, é ela quem escreve;
-    /// onde a aplicação veio da colagem, resseleciona o trecho que está lá e
-    /// deixa o `injectText` conferi-lo pela releitura antes de colar.
-    private func replaceAppliedText(
-        _ current: String,
-        with next: String,
-        in selection: CapturedSelection,
-        route: AppliedRoute,
-        targetApp: NSRunningApplication?,
-        clipboardSnapshot: ClipboardSnapshot?
-    ) async -> Bool {
-        if replaceSelection(in: selection, expecting: current, with: next) { return true }
-        guard route == .colagem, let targetApp else { return false }
-
-        returnFocus(to: targetApp)
-        guard await waitForAppActive(targetApp, maxAttempts: 30) else { return false }
-        await waitForModifiersReleased()
-        guard await selectBackwards(characters: current.count) else { return false }
-
-        let trocou = await injectText(
-            next,
-            selection: selection,
-            targetApp: targetApp,
-            clipboardSnapshot: clipboardSnapshot,
-            silencioso: true
-        )
-        logger.info("Troca por colagem no documento: \(trocou, privacy: .public)")
-        return trocou
-    }
-
-    /// Resseleciona para trás o trecho recém-colado, porque é só com a seleção
-    /// de volta que a releitura tem o que conferir: depois do ⌘V o cursor fica
-    /// no fim do que foi colado, e cada ⇧← anda um caractere.
-    ///
-    /// Isto não escreve nada. Se a seleção não sair exatamente igual ao texto
-    /// esperado — porque a pessoa digitou no meio, por exemplo —, a releitura
-    /// recusa a troca e o documento fica como está.
-    private func selectBackwards(characters count: Int) async -> Bool {
-        // Acima disso a rajada de teclas custa mais do que vale; o texto segue
-        // no documento e o aviso explica que o Desfazer do editor resolve.
-        guard count > 0, count <= 2000, !IsSecureEventInputEnabled() else { return false }
-        for _ in 0..<count {
-            sendKeyboardShortcut(keyCode: CGKeyCode(kVK_LeftArrow), flags: .maskShift)
-        }
-
-        // As teclas sintéticas chegam ao editor de forma assíncrona, e uma
-        // rajada longa demora a ser consumida. Sem esta pausa, a releitura que
-        // confere a seleção pode acontecer antes de ela terminar: o texto volta
-        // menor do que o esperado e a troca é recusada sem nada de errado ter
-        // acontecido. O tempo acompanha o tamanho da rajada, com piso para o
-        // caso curto e teto para não prender a interface.
-        let esperaEmMilissegundos = min(800, max(120, count / 2))
-        try? await Task.sleep(nanoseconds: UInt64(esperaEmMilissegundos) * 1_000_000)
-        return true
-    }
-
-    private func showAppliedResultPanel(
-        originalSelection: CapturedSelection,
-        revisedText: String,
-        action: CorrectionAction,
-        targetApp: NSRunningApplication?,
-        clipboardSnapshot: ClipboardSnapshot?,
-        route: AppliedRoute
-    ) {
-        closeResultPanel()
-        let revisedSelection = CapturedSelection(
-            text: revisedText,
-            element: originalSelection.element,
-            range: rangeAfterReplacing(originalSelection, with: revisedText),
-            anchor: originalSelection.anchor,
-            clipboardChangeCount: originalSelection.clipboardChangeCount
-        )
-        var showingOriginal = revisedText == originalSelection.text
-
-        let controller = AppliedResultPanelController(
-            title: action.title,
-            changeCount: TextChangeCounter.count(from: originalSelection.text, to: revisedText),
-            onRevert: { [weak self] in
-                guard let self else { return }
-                if !showingOriginal, !(await self.replaceAppliedText(
-                    revisedText,
-                    with: originalSelection.text,
-                    in: revisedSelection,
-                    route: route,
-                    targetApp: targetApp,
-                    clipboardSnapshot: clipboardSnapshot
-                )) {
-                    self.showAlert(
-                        title: "O texto mudou enquanto você revisava",
-                        message: "Nada foi sobrescrito. Use Desfazer no aplicativo de origem se ainda quiser voltar ao texto anterior."
-                    )
-                    return
-                }
-                self.closeResultPanel()
-                self.finishOperation(
-                    keeping: originalSelection,
-                    text: originalSelection.text,
-                    targetApp: targetApp,
-                    clipboardSnapshot: clipboardSnapshot,
-                    playFeedback: false
-                )
-            },
-            onToggleOriginal: { [weak self] wantsOriginal in
-                guard let self else { return false }
-                let changed: Bool
-                if wantsOriginal {
-                    changed = await self.replaceAppliedText(
-                        revisedText,
-                        with: originalSelection.text,
-                        in: revisedSelection,
-                        route: route,
-                        targetApp: targetApp,
-                        clipboardSnapshot: clipboardSnapshot
-                    )
-                } else {
-                    changed = await self.replaceAppliedText(
-                        originalSelection.text,
-                        with: revisedText,
-                        in: originalSelection,
-                        route: route,
-                        targetApp: targetApp,
-                        clipboardSnapshot: clipboardSnapshot
-                    )
-                }
-                guard changed else {
-                    self.showAlert(
-                        title: "O texto mudou enquanto você revisava",
-                        message: "A visualização não foi alternada para evitar sobrescrever sua edição."
-                    )
-                    return false
-                }
-                showingOriginal = wantsOriginal
-                self.returnFocus(to: targetApp)
-                return true
-            },
-            onConfirm: { [weak self] in
-                guard let self else { return }
-                if showingOriginal, revisedText != originalSelection.text {
-                    guard await self.replaceAppliedText(
-                        originalSelection.text,
-                        with: revisedText,
-                        in: originalSelection,
-                        route: route,
-                        targetApp: targetApp,
-                        clipboardSnapshot: clipboardSnapshot
-                    ) else {
-                        self.showAlert(
-                            title: "O texto mudou enquanto você revisava",
-                            message: "A revisão não foi confirmada para evitar sobrescrever sua edição."
-                        )
-                        return
-                    }
-                }
-                self.closeResultPanel()
-                if AppPreferences.shouldSaveHistory {
-                    HistoryStore.shared.add(actionTitle: action.title, processedText: revisedText)
-                }
-                self.finishOperation(
-                    keeping: revisedSelection,
-                    text: revisedText,
-                    targetApp: targetApp,
-                    clipboardSnapshot: clipboardSnapshot,
-                    playFeedback: true
-                )
-            }
-        )
-
-        let panel = FloatingPanel(size: NSSize(width: 420, height: 58), acceptsKeyboard: false)
-        panel.contentViewController = controller
-        panel.setContentSize(controller.view.fittingSize)
-        panel.position(near: originalSelection.anchor, preferAbove: true, gap: 6)
-        panel.orderFrontRegardless()
-        resultPanelWindow = panel
-
-        // O documento já mostra o texto que vale: a revisão ou, se a pessoa
-        // alternou para o original, o original. Confirmar implicitamente não
-        // escreve nada, não move o cursor e não tira o foco de onde estiver —
-        // a pessoa pode ter acabado de fazer outra seleção.
-        pendingResultConfirmation = { [weak self] in
-            guard let self else { return }
-            self.closeResultPanel()
-            let keptRevision = !showingOriginal
-            if keptRevision, AppPreferences.shouldSaveHistory {
-                HistoryStore.shared.add(actionTitle: action.title, processedText: revisedText)
-            }
-            self.finishOperation(
-                keeping: keptRevision ? revisedSelection : originalSelection,
-                text: keptRevision ? revisedText : originalSelection.text,
-                targetApp: targetApp,
-                clipboardSnapshot: clipboardSnapshot,
-                playFeedback: false,
-                restoringFocus: false
-            )
-        }
-    }
-
-    private func closeResultPanel() {
-        resultPanelWindow?.orderOut(nil)
-        resultPanelWindow = nil
-        pendingResultConfirmation = nil
-    }
-
-    /// Uma nova ação enquanto a barra de conferência espera o OK conta como
-    /// confirmação. Antes, a barra bloqueava qualquer outra correção até ser
-    /// fechada, mesmo com o resultado já aplicado no documento.
-    private func settlePendingResult() {
-        guard let confirm = pendingResultConfirmation else { return }
-        logger.info("Nova ação com resultado aguardando OK; mantendo o texto do documento.")
-        confirm()
-    }
-
-    private func finishOperation(
-        keeping selection: CapturedSelection,
-        text: String,
-        targetApp: NSRunningApplication?,
-        clipboardSnapshot: ClipboardSnapshot?,
-        playFeedback: Bool,
-        restoringFocus: Bool = true
-    ) {
-        if restoringFocus,
-           let element = selection.element,
-           let range = rangeAfterReplacing(selection, with: text) {
-            let caret = CFRange(location: range.location + range.length, length: 0)
-            _ = setSelectedTextRange(caret, of: element)
-        }
-        clipboardSnapshot?.restoreIfUnchanged(since: selection.clipboardChangeCount)
-        isProcessing = false
-        if restoringFocus { returnFocus(to: targetApp) }
-        if playFeedback { showSuccessFeedback(playPop: false) }
-        else { updateStatusIcon(processing: false) }
-    }
-
-    private func showFallbackPreview(
-        _ revisedText: String,
-        selection: CapturedSelection,
+    /// Monta a prévia e a mostra sem ativar o HollyCorretor: a pessoa continua
+    /// no editor enquanto o texto é gerado.
+    private func showPreview(
+        for selection: CapturedSelection,
         action: CorrectionAction,
         targetApp: NSRunningApplication?,
         clipboardSnapshot: ClipboardSnapshot?
-    ) {
+    ) -> PreviewViewController {
+        closePreview()
         let panel = makePreviewPanel()
-        let previewController = PreviewViewController(
+        let controller = PreviewViewController(
             originalText: selection.text,
             title: action.title,
-            onConfirm: { [weak self, weak panel] finalText in
-                panel?.onClose = nil
-                self?.previewPanel = nil
-                panel?.close()
+            resultCaption: action.resultCaption,
+            highlightsChanges: action.highlightsChanges,
+            onConfirm: { [weak self] finalText in
+                guard let self else { return }
+                self.closePreview()
                 if AppPreferences.shouldSaveHistory {
                     HistoryStore.shared.add(actionTitle: action.title, processedText: finalText)
                 }
                 Task {
-                    guard let self else { return }
                     let applied = await self.injectText(
                         finalText,
                         selection: selection,
@@ -1593,53 +1278,76 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
                     else { self.updateStatusIcon(processing: false) }
                 }
             },
-            onCancel: { [weak self, weak panel] in
-                panel?.onClose = nil
-                self?.previewPanel = nil
-                panel?.close()
-                clipboardSnapshot?.restoreIfUnchanged(since: selection.clipboardChangeCount)
-                self?.isProcessing = false
-                self?.updateStatusIcon(processing: false)
+            onCancel: { [weak self] in
+                self?.cancelCurrentOperation(
+                    selection: selection,
+                    clipboardSnapshot: clipboardSnapshot
+                )
             },
-            onCopy: { [weak self, weak panel] finalText in
-                panel?.onClose = nil
-                self?.previewPanel = nil
-                panel?.close()
+            onCopy: { [weak self] finalText in
+                guard let self else { return }
+                self.closePreview()
                 let pasteboard = NSPasteboard.general
                 pasteboard.clearContents()
                 pasteboard.setString(finalText, forType: .string)
-                self?.isProcessing = false
-                self?.showSuccessFeedback(playPop: false)
+                self.isProcessing = false
+                self.showSuccessFeedback(playPop: false)
             }
         )
-        panel.contentViewController = previewController
+        panel.contentViewController = controller
         panel.position(near: selection.anchor)
+        // Fechar a janela por ⌘W vale como cancelar.
         panel.onClose = { [weak self] in
-            self?.previewPanel = nil
-            self?.isProcessing = false
-            self?.updateStatusIcon(processing: false)
-            clipboardSnapshot?.restoreIfUnchanged(since: selection.clipboardChangeCount)
+            self?.cancelCurrentOperation(
+                selection: selection,
+                clipboardSnapshot: clipboardSnapshot
+            )
         }
         previewPanel = panel
+        panel.orderFrontRegardless()
+        return controller
+    }
+
+    /// O resultado chegou: a prévia o mostra por inteiro, com as diferenças
+    /// destacadas, e passa a ser a janela ativa para a pessoa revisar, editar
+    /// e decidir.
+    private func presentResult(_ revisedText: String, in preview: PreviewViewController) {
+        guard let panel = previewPanel, panel.contentViewController === preview else { return }
+        preview.finishStreaming(with: revisedText)
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
-        previewController.finishStreaming(with: revisedText)
+    }
+
+    private func closePreview() {
+        guard let panel = previewPanel else { return }
+        previewPanel = nil
+        panel.onClose = nil
+        if panel.isVisible { panel.close() }
+    }
+
+    private func cancelCurrentOperation(
+        selection: CapturedSelection,
+        clipboardSnapshot: ClipboardSnapshot?
+    ) {
+        currentTask?.cancel()
+        currentTask = nil
+        closePreview()
+        clipboardSnapshot?.restoreIfUnchanged(since: selection.clipboardChangeCount)
+        isProcessing = false
+        updateStatusIcon(processing: false)
+    }
+
+    private func returnFocus(to targetApp: NSRunningApplication?) {
+        guard let targetApp else { return }
+        NSApp.yieldActivation(to: targetApp)
+        targetApp.activate()
     }
 
     /// Uma segunda tentativa não deve virar apenas o alerta sonoro padrão do
-    /// sistema. Se a prévia ainda existe, ela volta para a frente; nos poucos
-    /// instantes em que o resultado está sendo aplicado, uma mensagem explica o
-    /// que está acontecendo. A Siri recebe a explicação como erro, por isso
-    /// pode dispensar o alerta.
+    /// sistema. Se a prévia ainda existe, ela volta para a frente; o mesmo
+    /// vale para o painel de ações. A Siri recebe a explicação como erro, por
+    /// isso pode dispensar o alerta.
     private func revealCurrentOperation(alertIfNothingVisible: Bool = true) {
-        if let panel = resultPanelWindow {
-            panel.orderFrontRegardless()
-            return
-        }
-        if let panel = generationPanelWindow {
-            panel.orderFrontRegardless()
-            return
-        }
         if let panel = previewPanel {
             NSApp.activate(ignoringOtherApps: true)
             panel.makeKeyAndOrderFront(nil)
@@ -1657,22 +1365,18 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         )
     }
 
-    /// Devolve `true` quando o resultado chegou ao documento. Nos demais casos
-    /// um alerta já explicou o que houve e o resultado pode estar na área de
-    /// transferência para colar à mão.
-    ///
-    /// Em `silencioso` nenhum alerta aparece, a área de transferência fica como
-    /// estava e a recusa é só o `false` devolvido. É o modo das tentativas que
-    /// podem terminar na prévia, sem nada a explicar a quem está escrevendo.
+    /// Devolve `true` quando o resultado chegou ao documento — e chegou de
+    /// verdade: tanto a escrita pela Acessibilidade quanto a colagem são
+    /// conferidas relendo o documento. Nos demais casos um alerta já explicou o
+    /// que houve, e o resultado está na área de transferência para colar à mão.
     private func injectText(
         _ finalText: String,
         selection: CapturedSelection,
         targetApp: NSRunningApplication?,
-        clipboardSnapshot: ClipboardSnapshot?,
-        silencioso: Bool = false
+        clipboardSnapshot: ClipboardSnapshot?
     ) async -> Bool {
         func recusar(title: String, message: String) -> Bool {
-            if !silencioso { showAlert(title: title, message: message) }
+            showAlert(title: title, message: message)
             return false
         }
 
@@ -1698,9 +1402,9 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         }
 
         // Caminho preferido: escrever direto no campo pela Acessibilidade. Não
-        // mexe na área de transferência, não simula teclas e não depende de
-        // espera nenhuma.
-        if replaceSelection(in: selection, expecting: selection.text, with: finalText) {
+        // mexe na área de transferência nem simula teclas; a única espera é a
+        // da releitura que confere se o documento mudou mesmo.
+        if await replaceSelection(in: selection, expecting: selection.text, with: finalText) {
             logger.info("Resultado aplicado pela Acessibilidade.")
             clipboardSnapshot?.restoreIfUnchanged(since: selection.clipboardChangeCount)
             return true
@@ -1708,13 +1412,6 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
 
         let readiness = await prepareSelectionForPaste(selection)
         guard readiness != .no else {
-            // Em silêncio o resultado não vai para a área de transferência: ela
-            // volta ao que era e quem chamou segue para a prévia, onde o texto
-            // continua à mão sem ocupar o lugar do que a pessoa havia copiado.
-            guard !silencioso else {
-                clipboardSnapshot?.restoreIfUnchanged(since: selection.clipboardChangeCount)
-                return false
-            }
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
             pasteboard.setString(finalText, forType: .string)
@@ -1757,9 +1454,6 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         // o mesmo texto, e o ⌘V substitui exatamente aquela seleção.
         let focoConfere = readiness == .byRecopy || capturedElementIsFocused(selection)
         guard targetApp.isActive, focoConfere else {
-            // Em silêncio o resultado também não fica na área de transferência:
-            // ela volta ao que era antes desta tentativa.
-            if silencioso { backup.restoreIfUnchanged(since: injectionChangeCount) }
             return recusar(
                 title: "Resultado copiado",
                 message: "O foco do editor mudou antes da colagem. Use ⌘V para colar o resultado no local desejado."
@@ -1769,6 +1463,19 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         logger.info(
             "Resultado colado com ⌘V: \(finalText.count, privacy: .public) caracteres; autorizado por \(readiness == .byRecopy ? "releitura" : "intervalo", privacy: .public)."
         )
+
+        // O ⌘V também pode não dar em nada — numa página que não é editável,
+        // por exemplo. Onde o editor publica o intervalo, o documento é relido
+        // para conferir se o texto novo chegou lá. Se não chegou, o resultado
+        // fica na área de transferência para a pessoa colar onde quiser, e a
+        // cópia de segurança não volta, porque voltaria por cima dele.
+        if let element = selection.element, let range = selection.range,
+           !(await documentChanged(from: selection.text, to: finalText, at: range.location, in: element)) {
+            return recusar(
+                title: "Resultado copiado",
+                message: "O editor não aceitou a substituição — o texto pode não ser editável nele. O resultado está na área de transferência: use ⌘V onde quiser colá-lo."
+            )
+        }
 
         // O editor lê a área de transferência depois de receber o ⌘V. A
         // restauração espera por isso sem prender a operação: antes, o app
@@ -2069,7 +1776,6 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         }
         lastHit = nil
         selectionPill?.hide()
-        settlePendingResult()
         guard !isProcessing else {
             logger.info("Pastilha clicada durante outro processamento.")
             revealCurrentOperation()

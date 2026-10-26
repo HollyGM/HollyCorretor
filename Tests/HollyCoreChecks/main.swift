@@ -23,7 +23,103 @@ enum HollyCoreChecks {
         try checkLongTextChangeCounter()
         try checkCommandURLs()
         try checkSelectionGuard()
+        try checkTextDiff()
+        try checkLongTextDiff()
         print("Todos os testes do HollyCore passaram.")
+    }
+
+    private static func substrings(_ ranges: [Range<String.Index>], of text: String) -> [String] {
+        ranges.map { String(text[$0]) }
+    }
+
+    private static func checkTextDiff() throws {
+        try require(
+            TextDiff.compare("Texto correto.", "Texto correto.").isEmpty,
+            "Textos idênticos não deveriam ter diferenças a destacar."
+        )
+
+        let original = "nós vai no forum amanha, se der."
+        let revised = "nós vamos ao fórum amanhã, se der."
+        let diff = TextDiff.compare(original, revised)
+        try require(
+            substrings(diff.removed, of: original) == ["vai no forum amanha"],
+            "As palavras trocadas em sequência deveriam formar um só trecho no original; veio \(substrings(diff.removed, of: original))."
+        )
+        try require(
+            substrings(diff.inserted, of: revised) == ["vamos ao fórum amanhã"],
+            "As palavras trocadas em sequência deveriam formar um só trecho no revisado; veio \(substrings(diff.inserted, of: revised))."
+        )
+
+        let inserted = TextDiff.compare("Uma frase.", "Uma frase mais clara!")
+        try require(
+            inserted.removed.map { String("Uma frase."[$0]) } == ["."],
+            "Só a pontuação trocada deveria sair do original; veio \(substrings(inserted.removed, of: "Uma frase."))."
+        )
+        try require(
+            substrings(inserted.inserted, of: "Uma frase mais clara!") == ["mais clara!"],
+            "O acréscimo e a pontuação nova deveriam ser destacados juntos; veio \(substrings(inserted.inserted, of: "Uma frase mais clara!"))."
+        )
+
+        let removed = TextDiff.compare("Remova este começo. Texto final.", "Texto final.")
+        try require(
+            substrings(removed.removed, of: "Remova este começo. Texto final.") == ["Remova este começo."],
+            "Um trecho removido do começo deveria ser destacado inteiro no original."
+        )
+        try require(
+            removed.inserted.isEmpty,
+            "Uma remoção pura não deveria destacar nada no revisado."
+        )
+
+        let separated = TextDiff.compare("a b c d e", "a x c d y")
+        try require(
+            substrings(separated.removed, of: "a b c d e") == ["b", "e"]
+                && substrings(separated.inserted, of: "a x c d y") == ["x", "y"],
+            "Trocas separadas por palavras iguais deveriam virar trechos distintos."
+        )
+
+        let punctuation = TextDiff.compare("Olá mundo", "Olá, mundo")
+        try require(
+            punctuation.removed.isEmpty
+                && substrings(punctuation.inserted, of: "Olá, mundo") == [","],
+            "Uma vírgula acrescentada deveria ser destacada sozinha."
+        )
+
+        try require(
+            TextDiff.compare("", "Novo texto").removed.isEmpty
+                && substrings(TextDiff.compare("", "Novo texto").inserted, of: "Novo texto") == ["Novo texto"],
+            "Um original vazio deveria destacar o revisado inteiro."
+        )
+    }
+
+    private static func checkLongTextDiff() throws {
+        let prefix = String(repeating: "palavra ", count: 10_000)
+        let suffix = String(repeating: " palavra", count: 10_000)
+        let original = prefix + "testo" + suffix
+        let revised = prefix + "texto" + suffix
+
+        let started = Date()
+        let diff = TextDiff.compare(original, revised)
+        let elapsed = Date().timeIntervalSince(started)
+        try require(
+            substrings(diff.removed, of: original) == ["testo"]
+                && substrings(diff.inserted, of: revised) == ["texto"],
+            "Uma correção no meio de um documento longo deveria destacar só a palavra."
+        )
+        try require(
+            elapsed < 2,
+            "Destacar uma correção num documento longo demorou \(elapsed) s."
+        )
+
+        // Dois textos longos sem nada em comum passam do teto da matriz: o
+        // destaque cobre tudo, sem travar.
+        let left = (0..<1_500).map { "esquerda\($0)" }.joined(separator: " ")
+        let right = (0..<1_500).map { "direita\($0)" }.joined(separator: " ")
+        let whole = TextDiff.compare(left, right)
+        try require(
+            substrings(whole.removed, of: left) == [left]
+                && substrings(whole.inserted, of: right) == [right],
+            "Acima do teto da matriz, o miolo diferente deveria ser destacado por inteiro."
+        )
     }
 
     private static func checkSelectionGuard() throws {

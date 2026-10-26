@@ -30,7 +30,7 @@ a uma API de terceiros.
 
 <p align="center">
   <em>Painel de prévia da ação <strong>Formalizar (juridiquês)</strong> com o menu da barra de status aberto.
-  Nos editores que não permitem a aplicação direta, o resultado é revisado nesta prévia antes de substituir o texto original.</em>
+  Toda ação termina numa prévia como esta: o original e o resultado são revisados, com as diferenças destacadas, antes de qualquer alteração no documento.</em>
 </p>
 
 Versão atual: **0.4.0** (compilação 4) — consulte o [histórico de versões](CHANGELOG.md).
@@ -145,13 +145,20 @@ O painel se fecha com Esc ou com um clique fora dele.
 ## Interface
 
 O HollyCorretor vive na barra de menus, sem ícone no Dock. Ao acionar uma ação —
-por atalho, pelo ícone da barra de menus ou pelo menu **Serviços** — um indicador
-compacto acompanha a geração, que pode ser cancelada até o resultado ser
-aplicado. Quando o editor permite uma troca segura pela Acessibilidade, o
-resultado entra direto no documento, com uma barra contextual para comparar o
-original, **Reverter** ou confirmar com **OK**. Nos demais editores, aparece uma
-prévia editável com **Substituir**, **Copiar** e **Cancelar**; nada é colado às
-cegas.
+pelo clique direito, por atalho, pelo ícone da barra de menus, pelo menu
+**Serviços** ou pela Siri — uma prévia abre junto do texto e mostra o resultado
+enquanto ele é gerado. Ao terminar, ela exibe o original e o resultado um sobre
+o outro, com as diferenças destacadas (o que saiu, em vermelho; o que entrou,
+em verde) e a contagem de alterações. O resultado pode ser editado ali mesmo.
+Nada é escrito no documento até **Substituir** (⌘↩); **Copiar** leva o
+resultado à área de transferência e **Cancelar** (Esc) descarta tudo. O mesmo
+vale para todas as ações.
+
+Ao substituir, o app escreve pela Acessibilidade ou, onde o editor não permite,
+cola com ⌘V — e nos dois casos relê o documento para conferir que o texto novo
+chegou lá. Se o editor aceitou a ordem sem mudar nada (o conteúdo de uma página
+da web ou de uma conversa, por exemplo, não é editável), o app avisa e deixa o
+resultado na área de transferência para colar onde quiser.
 
 Os atalhos, a instrução da **Ação personalizada** e o histórico local são
 ajustados em **Preferências**:
@@ -192,10 +199,12 @@ No primeiro uso:
    **Serviços › HollyCorretor…** leva ao mesmo painel. Também dá para usar um
    atalho de teclado ou o ícone da barra de menus.
 4. Escolha uma ação no painel ou descreva a alteração com as próprias palavras.
-5. O resultado aparece no próprio documento; use a barra contextual para
-   comparar o original, **Reverter** ou confirmar com **OK**.
-6. Em editores que não permitem a aplicação direta com segurança, use a prévia
-   para **Substituir**, **Copiar** ou **Cancelar**.
+5. A prévia mostra o original e o resultado, com as diferenças destacadas.
+   Revise, ajuste o que quiser e clique em **Substituir** para escrever no
+   documento, **Copiar** para levar o resultado à área de transferência ou
+   **Cancelar** para descartar.
+6. Se o editor não aceitar a substituição (um texto que não é editável, por
+   exemplo), o app avisa e deixa o resultado copiado para colar com ⌘V.
 
 O HollyCorretor nunca envia a mensagem automaticamente.
 
@@ -216,10 +225,13 @@ O HollyCorretor nunca envia a mensagem automaticamente.
   mantenha-a desligada.
 - Quando o aplicativo de origem expõe o campo pela API de Acessibilidade, o
   resultado é escrito direto nele e a área de transferência não é tocada.
+- Nada é escrito no documento antes de a pessoa revisar o resultado na prévia e
+  clicar em **Substituir**.
 - Antes de escrever, o aplicativo confere se o campo, o intervalo e o texto da
   seleção original continuam os mesmos, para não atingir outra ocorrência do
-  mesmo trecho nem outro campo. Se algo mudou, mostra a prévia ou deixa o
-  resultado na área de transferência para colar com ⌘V.
+  mesmo trecho nem outro campo; depois de escrever, relê o documento para
+  confirmar que a troca aconteceu. Se algo mudou ou o editor não aceitou a
+  troca, avisa e deixa o resultado na área de transferência para colar com ⌘V.
 - No caminho alternativo, que usa a área de transferência, o conteúdo anterior
   só é restaurado se ela não tiver sido alterada novamente; assim, uma cópia
   feita durante o processamento não é sobrescrita.
@@ -270,7 +282,8 @@ compilação vêm de `Resources/Info.plist`, e as variáveis `HOLLY_VERSION` e
 Estrutura principal:
 
 - `Sources/HollyCore`: regras das ações, divisão segura de textos, orçamento dos
-  blocos e limpeza e validação das respostas;
+  blocos, limpeza e validação das respostas e o destaque das diferenças entre
+  original e resultado;
 - `Sources/HollyCorretor`: integração com Apple Intelligence e recursos do macOS;
 - `Sources/HollyCorretor/Intents`: ações da Siri e do app Atalhos (App Intents)
   e o gerador dos metadados que o sistema lê;
