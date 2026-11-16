@@ -25,6 +25,7 @@ enum HollyCoreChecks {
         try checkSelectionGuard()
         try checkTextDiff()
         try checkLongTextDiff()
+        try checkClipboardPrivacy()
         print("Todos os testes do HollyCore passaram.")
     }
 
@@ -569,5 +570,22 @@ enum HollyCoreChecks {
                 "O endereço \(address) não deveria acionar nenhuma ação."
             )
         }
+    }
+
+    private static func checkClipboardPrivacy() throws {
+        // Os nomes precisam ser exatamente os da convenção nspasteboard.org, que
+        // os gerenciadores de área de transferência procuram para não guardar o texto.
+        try require(
+            ClipboardPrivacy.transientType == "org.nspasteboard.TransientType",
+            "Tipo temporário fora da convenção nspasteboard.org."
+        )
+        try require(
+            ClipboardPrivacy.concealedType == "org.nspasteboard.ConcealedType",
+            "Tipo confidencial fora da convenção nspasteboard.org."
+        )
+        try require(
+            Set(ClipboardPrivacy.markerTypes) == [ClipboardPrivacy.transientType, ClipboardPrivacy.concealedType],
+            "O texto colocado só para colar deveria levar as duas marcações."
+        )
     }
 }

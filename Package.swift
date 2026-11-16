@@ -23,7 +23,7 @@ products.append(.executable(name: "HollyCorretor", targets: ["HollyCorretor"]))
 dependencies.append(
     .package(
         url: "https://github.com/sindresorhus/KeyboardShortcuts",
-        exact: "1.15.0"
+        exact: "3.1.0"
     )
 )
 targets.append(

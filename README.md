@@ -33,7 +33,7 @@ a uma API de terceiros.
   Toda ação termina numa prévia como esta: o original e o resultado são revisados, com as diferenças destacadas, antes de qualquer alteração no documento.</em>
 </p>
 
-Versão atual: **0.4.0** (compilação 4) — consulte o [histórico de versões](CHANGELOG.md).
+Versão atual: **0.5.0** (compilação 5) — consulte o [histórico de versões](CHANGELOG.md).
 
 ## Compatibilidade
 
@@ -43,7 +43,7 @@ Versão atual: **0.4.0** (compilação 4) — consulte o [histórico de versões
 - Um MacBook com chip M5 atende ao requisito de arquitetura; a disponibilidade
   final também depende da versão do macOS, da região e das configurações da Apple
   Intelligence.
-- A versão 0.4.0 foi validada no macOS 27.2 com o Swift 6.4.
+- A versão 0.5.0 foi validada no macOS 27.3 com o Swift 6.4.
 
 O aplicativo ainda não funciona no Windows ou Linux. A interface, os atalhos
 globais, a leitura da seleção e o modelo de IA usam APIs exclusivas do macOS. A

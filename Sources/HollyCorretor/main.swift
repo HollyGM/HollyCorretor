@@ -39,6 +39,21 @@ private struct ClipboardSnapshot: @unchecked Sendable {
     }
 }
 
+/// Coloca na área de transferência um texto que só existe para ser colado pelo
+/// próprio app: fica só neste Mac (sem a Área de Transferência Universal) e vai
+/// marcado como temporário e confidencial, para não entrar no histórico dos
+/// gerenciadores de área de transferência. O botão "Copiar" não usa isto: ali a
+/// pessoa pediu o texto e pode querer colá-lo em qualquer lugar.
+@discardableResult
+private func writeTextForPasting(_ text: String, to pasteboard: NSPasteboard = .general) -> Bool {
+    pasteboard.prepareForNewContents(with: .currentHostOnly)
+    guard pasteboard.setString(text, forType: .string) else { return false }
+    for marker in ClipboardPrivacy.markerTypes {
+        pasteboard.setData(Data(), forType: NSPasteboard.PasteboardType(marker))
+    }
+    return true
+}
+
 /// O texto capturado e como ele foi obtido. Guardar o elemento de
 /// Acessibilidade permite devolver o resultado escrevendo direto nele, sem
 /// passar pela área de transferência nem simular teclas.
@@ -1412,9 +1427,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
 
         let readiness = await prepareSelectionForPaste(selection)
         guard readiness != .no else {
-            let pasteboard = NSPasteboard.general
-            pasteboard.clearContents()
-            pasteboard.setString(finalText, forType: .string)
+            writeTextForPasting(finalText)
             showAlert(
                 title: "Resultado copiado",
                 message: "O editor desfez a seleção e o HollyCorretor não colou no cursor para evitar duplicar o texto. Use ⌘V para colar o resultado no local desejado."
@@ -1437,8 +1450,7 @@ final class HollyCorretorApp: NSObject, NSApplicationDelegate, NSMenuDelegate, N
         // o que volta depois da colagem, em vez de um conteúdo mais antigo.
         let backup = clipboardSnapshot ?? ClipboardSnapshot()
         let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        guard pasteboard.setString(finalText, forType: .string) else {
+        guard writeTextForPasting(finalText, to: pasteboard) else {
             backup.restore()
             return recusar(
                 title: "Falha ao preparar o texto",

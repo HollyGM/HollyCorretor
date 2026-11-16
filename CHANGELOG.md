@@ -2,7 +2,30 @@
 
 As alterações relevantes do HollyCorretor são registradas neste arquivo.
 
-## Não publicado
+## 0.5.0 (compilação 5) — 2026-11-16
+
+### Privacidade da área de transferência
+
+- O texto que o HollyCorretor coloca na área de transferência só para colar o
+  resultado no documento passa a ficar **só neste Mac**: a Área de
+  Transferência Universal não o leva mais ao iPhone ou ao iPad. Ele também vai
+  marcado como temporário e confidencial (`org.nspasteboard.TransientType` e
+  `ConcealedType`), convenção respeitada por gerenciadores de área de
+  transferência como Raycast, Paste, Alfred e Maccy, que deixam de guardá-lo no
+  histórico.
+- O botão **Copiar** da prévia e a cópia pelo histórico continuam como antes:
+  ali a pessoa pediu o texto e pode querer colá-lo em qualquer lugar.
+- O texto que o próprio editor copia quando o HollyCorretor simula ⌘C não pode
+  receber essas marcações. Como antes, a área de transferência anterior é
+  devolvida depois.
+
+### Dependências
+
+- KeyboardShortcuts 1.15.0 → 3.1.0. A única mudança necessária foi o nome do
+  parâmetro do atalho inicial (`default:` → `initial:`). Os atalhos já
+  personalizados continuam guardados no mesmo formato e com as mesmas chaves.
+
+### Também nesta versão (antes listado como "Não publicado")
 
 ### Revisão antes de substituir
 
